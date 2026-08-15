@@ -11,8 +11,11 @@ def now_utc() -> datetime:
 
 
 def gen_id(content: str, salt: str = "") -> str:
+    # 12 位 hex = 48 bit：约 1600 万条记忆内碰撞概率可忽略。
+    # 别缩短——id 是主键，撞了 INSERT 直接 IntegrityError。8 位（32bit）
+    # 时 ~7.7 万条就有过半概率碰撞，长期使用的库迟早炸。
     raw = f"{content}|{salt}|{now_utc().timestamp()}|{id(object())}"
-    return "m_" + hashlib.sha1(raw.encode("utf-8")).hexdigest()[:8]
+    return "m_" + hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
 
 
 @dataclass

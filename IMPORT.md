@@ -57,7 +57,7 @@ cd ../logic-thinking-mcp && python3 demo.py && python3 tests/test_reasoning.py
 cd ../inner-voice-mcp  && python3 demo.py && INNER_MIND_NO_DAEMON=1 python3 tests/test_voice.py
 ```
 
-全部跑通 = 154 项断言绿（11+24 / 53 / 66）。demo 用的是临时库，跑完即弃，不污染正式库。
+全部跑通 = 160 项断言绿（12 组 / 24 / 53 / 71）。demo 用的是临时库，跑完即弃，不污染正式库。
 
 ## 第四步：导入 MCP 客户端
 

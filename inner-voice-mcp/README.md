@@ -75,7 +75,7 @@
 
 ```bash
 pip install -r requirements.txt          # 只需官方 mcp SDK
-python tests/test_voice.py               # 66 项断言
+python tests/test_voice.py               # 71 项断言
 python demo.py                           # 离线演示（不真拉进程）
 ```
 

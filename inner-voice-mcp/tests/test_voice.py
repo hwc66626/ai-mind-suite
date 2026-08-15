@@ -280,6 +280,44 @@ def main():
     check("相近未中给出措辞提示",
           near and any(x["锚定任务"] == "整理实验数据" for x in near), str(near))
 
+    print("\n[11.5] 隐性 bug 回归（升级风暴/双重列出/混排词元/Z后缀）")
+    # a) 升级风暴：老叩门连续 tick 只按梯子逐级升，不秒升满
+    e8 = new_engine()
+    late = datetime.now() - timedelta(minutes=C.ESCALATE_AFTER_MIN * 2 + 5)
+    vv = e8.store.add_voice(V(kind="alarm", text="老叩门", due_at=iso(late),
+                              every=0, window_minutes=0))
+    e8.store.add_ping(vv, source="alarm", fired_at=late)
+    for _ in range(6):   # 模拟守护进程连打 6 个 tick（间隔30秒，共3分钟）
+        e8.store.escalate_stale(datetime.now(), C.ESCALATE_AFTER_MIN,
+                                C.ESCALATE_MAX)
+    p_old = [x for x in e8.store.open_pings(datetime.now())
+             if x.text == "老叩门"][0]
+    check("升级按梯子走不风暴",
+          p_old.escalated == 2, f"65分钟老叩门 6 个 tick 后 escalated={p_old.escalated}（应为2）")
+    # b) check_gate 不重复列出本次刚触发的叩门
+    e9 = new_engine()
+    e9.set_note("部署前看灰度", "部署")
+    r9 = e9.check_gate("before_commit", context="准备部署")
+    ids_ask = {x["ping"] for x in r9["此刻该问"] if isinstance(x, dict)}
+    ids_pend = {x["ping"] for x in r9["待答叩门"] if isinstance(x, dict)}
+    check("刚触发的叩门不进待答列表", not (ids_ask & ids_pend),
+          f"重复: {ids_ask & ids_pend}")
+    # c) 中英混排词元：英文词保整词
+    from inner_mind.similarity import tokens as _tok
+    check("混排词元保留英文整词",
+          "deploy" in _tok("用AI部署deploy方案") and "ai" in _tok("AI记住"),
+          str(sorted(_tok("用AI部署deploy方案"))))
+    # d) ISO 带 Z 后缀（Py3.10 兼容）；期望值按本机时区算，CI 跨时区才稳
+    _exp = datetime.fromisoformat("2026-08-16T09:00:00+00:00"
+                                  ).astimezone().replace(tzinfo=None)
+    _d, _ev = parse_when("2026-08-16T09:00:00Z", datetime(2026, 8, 15, 12, 0))
+    check("Z 后缀可解析且按 UTC 转本地", _d == _exp, f"{_d} vs 期望 {_exp}")
+    try:
+        parse_when("+999999999999m", datetime.now())
+        check("超大相对时间报 ValueError", False, "未抛错")
+    except ValueError:
+        check("超大相对时间报 ValueError", True)
+
     print("\n[12] 老库迁移：无 bind_task 列的库自动补列")
     import sqlite3
     old_db = os.path.join(TMP, "old.db")

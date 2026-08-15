@@ -31,6 +31,14 @@ def ids_of(results):
 def main():
     brain = new_brain()
 
+    # ---------- 0. id 生成：足够长防生日碰撞（主键撞了会 IntegrityError） ----------
+    phase("0 id 生成")
+    from brain_memory.models import gen_id
+    big = {gen_id(f"内容{i}") for i in range(50_000)}   # 5万条：32bit 必撞，48bit 稳
+    assert len(big) == 50_000, f"gen_id 碰撞：{50_000 - len(big)} 个重复"
+    assert all(len(x) == 2 + 12 for x in list(big)[:5]), "id 应为 m_ + 12 hex"
+    print("  5 万条 id 零碰撞（48bit 随机空间）")
+
     # ---------- 1. 编码与基本检索 ----------
     phase("1 编码与基本检索")
     r1 = brain.remember("Python 的 GIL 使得多线程无法真正并行执行 CPU 计算",

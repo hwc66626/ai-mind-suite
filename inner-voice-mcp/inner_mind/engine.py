@@ -128,7 +128,7 @@ class InnerVoice:
             near = []
             for v in self.store.list_voices(active_only=True, kind="task"):
                 a = task_affinity(v.bind_task, done_task)
-                if 0 < a <= 0.6:
+                if 0 < a <= C.TASK_MATCH_OVERLAP:
                     near.append({"锚定任务": v.bind_task, "提醒": v.text,
                                  "亲和度": round(a, 2)})
             near.sort(key=lambda x: -x["亲和度"])
@@ -168,12 +168,14 @@ class InnerVoice:
             gate = "any"
         now = datetime.now()
         fired = []
+        fired_ids: set[int] = set()   # 本次调用刚产生的叩门：下面不再重复列出
 
         # 1) 闸门质问（冷却内的不再问）
         for v in self.store.list_voices(active_only=True, kind="question",
                                         gate=gate):
             if cooldown_ok(v, now):
                 p = self.store.add_ping(v, source="gate", fired_at=now)
+                fired_ids.add(p.id)
                 fired.append({"ping": p.id, "来源": "闸门", "类型": "质问",
                               "内容": v.text, "优先级": v.priority,
                               "为什么": v.why})
@@ -184,18 +186,21 @@ class InnerVoice:
                 hit, kw = match_event(v, context)
                 if hit and cooldown_ok(v, now):
                     p = self.store.add_ping(v, source="event", fired_at=now)
+                    fired_ids.add(p.id)
                     fired.append({"ping": p.id, "来源": f"便签命中「{kw}」",
                                   "类型": "提醒", "内容": v.text,
                                   "优先级": v.priority, "为什么": v.why})
 
-        # 3) 未答叩门（守护进程攒下的闹钟、之前命中的便签等）
+        # 3) 未答叩门（守护进程攒下的闹钟等"历史"叩门；刚在本调用里
+        #    触发过的已在"此刻该问"里，再列一遍会让宿主重复作答）
         pending = self.store.open_pings(now)
         src_cn = {"alarm": "闹钟", "event": "便签", "gate": "闸门", "task": "任务提醒"}
         alarm_rows = [
             {"ping": p.id, "来源": src_cn.get(p.source, p.source),
              "内容": p.text, "优先级": p.priority,
              "升级": p.escalated or None, "响于": p.fired_at}
-            for p in pending if p.source != "gate"
+            for p in pending
+            if p.source != "gate" and p.id not in fired_ids
         ][:10]
 
         return {

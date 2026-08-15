@@ -78,7 +78,7 @@ cd ../logic-thinking-mcp && python3 tests/test_reasoning.py
 cd ../inner-voice-mcp  && python3 tests/test_voice.py && python3 tests/test_daemon_live.py
 ```
 
-167 项断言 + 端到端场景 17 步，CI 覆盖 Ubuntu / Windows / macOS × Python 3.10–3.12。
+174 项断言 + 端到端场景 17 步，CI 覆盖 Ubuntu / Windows / macOS × Python 3.10–3.12。
 
 ## 许可
 

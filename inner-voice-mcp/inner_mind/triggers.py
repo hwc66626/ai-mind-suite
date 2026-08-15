@@ -34,7 +34,14 @@ def parse_when(spec: str, now: datetime,
     m = _rel_re.match(spec)
     if m:
         val, unit = float(m.group(1)), m.group(2).lower()
-        return now + timedelta(minutes=val * C.MINUTES[unit]), every or 0
+        try:
+            return now + timedelta(minutes=val * C.MINUTES[unit]), every or 0
+        except OverflowError as exc:
+            raise ValueError(
+                f"时间跨度太大：{spec!r}（单次间隔最长约 2 年）") from exc
+    # Py3.10 的 fromisoformat 不认 "Z" 后缀（3.11 才支持），先归一成 +00:00
+    if spec.endswith(("Z", "z")):
+        spec = spec[:-1] + "+00:00"
     try:
         dt = datetime.fromisoformat(spec)
     except ValueError as exc:
@@ -69,19 +76,20 @@ def task_affinity(bind_task: str, done_task: str) -> float:
 def match_task(bind_task: str, done_task: str) -> bool:
     """任务完成命中判定：完成了 done_task，锚在 bind_task 的提醒该不该响。
 
-    规则：整句包含直接命中；锚 ≥3 个词元时，包含度严格 >0.6 算命中；
-    锚只有 1~2 个词元时只认整句包含（单字/单词到处出现，包含度必满分
-    会误命中）。卡在 0.6 线上的（如锚"给手机充电"遇上"给手机贴膜"，
-    共享"给手机"3/5 词元）宁可不算——报为"相近未中"，让宿主确认措辞。
+    规则：整句包含直接命中；锚 ≥TASK_MATCH_MIN_TOKENS 个词元时，包含度
+    严格 >TASK_MATCH_OVERLAP 算命中；锚只有 1~2 个词元时只认整句包含
+    （单字/单词到处出现，包含度必满分会误命中）。恰好卡在阈值上的
+    （如锚"给手机充电"遇上"给手机贴膜"，共享"给手机"3/5 词元）宁可
+    不算——报为"相近未中"，让宿主确认措辞。
     """
     if not bind_task or not done_task:
         return False
     if _norm(bind_task) in _norm(done_task):
         return True
     tb = tokens(bind_task)
-    if len(tb) <= 2:
+    if len(tb) < C.TASK_MATCH_MIN_TOKENS:
         return False
-    return task_affinity(bind_task, done_task) > 0.6
+    return task_affinity(bind_task, done_task) > C.TASK_MATCH_OVERLAP
 
 
 def match_event(voice: Voice, context: str) -> tuple[bool, str]:

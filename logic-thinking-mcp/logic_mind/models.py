@@ -29,8 +29,10 @@ def now_utc() -> datetime:
 
 
 def gen_id(prefix: str, content: str = "") -> str:
+    # 12 位 hex = 48 bit：32bit（8位）时 ~7.7 万条轨迹就有过半碰撞概率，
+    # id 是主键，撞了 INSERT 直接 IntegrityError——长期库迟早炸
     raw = f"{content}|{now_utc().timestamp()}|{id(object())}"
-    return prefix + "_" + hashlib.sha1(raw.encode("utf-8")).hexdigest()[:8]
+    return prefix + "_" + hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
 
 
 def clamp(x: float, lo: float, hi: float) -> float:

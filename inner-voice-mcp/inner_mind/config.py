@@ -19,8 +19,9 @@ GATES = ("task_start", "before_answer", "before_commit",
 NOTE_COOLDOWN_MIN = 60              # 便签默认冷却（同一便签 1 小时内不重复骚扰）
 GATE_COOLDOWN_MIN = 20              # 同一闸门质问默认冷却
 ALARM_SNOOZE_MIN = 10               # 默认小睡时长
-TASK_MATCH_THRESHOLD = 0.18         # 任务匹配阈值：词元重合度超过即视为"完成了它"
-TASK_COOLDOWN_MIN = 10              # 同一任务提醒冷却（防同一任务反复完成刷屏）
+TASK_MATCH_MIN_TOKENS = 3     # 锚定任务不足 3 个词元时只认整句包含（防单词误命中）
+TASK_MATCH_OVERLAP = 0.6      # 词元包含度超过该值才算"完成了锚定的事"；恰好等于的不算
+TASK_COOLDOWN_MIN = 10        # 同一任务提醒冷却（防同一任务反复完成刷屏）
 
 # ---------------- 收件箱维护 ----------------
 INBOX_MAX = 50                      # 未答叩门最多展示条数

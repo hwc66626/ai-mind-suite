@@ -266,7 +266,12 @@ class VoiceStore:
 
     def escalate_stale(self, now: datetime, after_min: int,
                        max_esc: int) -> list[Ping]:
-        """未答且超过冷却的叩门升级：escalated+1、优先级+1（封顶5）。"""
+        """未答叩门渐进升级：escalated+1、优先级+1（封顶5）。
+
+        升级节奏按梯子走：第 N 级要求 fired_at 已超过 N*after_min——
+        没有这个间隔判定的话，守护进程每个 tick（默认 30 秒）都会把
+        同一批老叩门再升一级，几秒钟就冲到 max（升级风暴）。
+        """
         cutoff = iso(now - timedelta(minutes=after_min))
         out = []
         with self._lock:
@@ -275,6 +280,11 @@ class VoiceStore:
                 "AND fired_at<=? AND (snoozed_until='' OR snoozed_until<=?)",
                 (max_esc, cutoff, iso(now))).fetchall()
             for r in rows:
+                deadline = now - timedelta(
+                    minutes=after_min * (r["escalated"] + 1))
+                if parse_iso(r["fired_at"]) and \
+                        parse_iso(r["fired_at"]) > deadline:
+                    continue   # 还没爬到下一级的间隔，不升
                 new_pri = min(5, r["priority"] + 1)
                 self._conn.execute(
                     "UPDATE pings SET escalated=escalated+1, priority=? WHERE id=?",
