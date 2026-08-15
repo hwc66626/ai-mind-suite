@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS voices (
   category TEXT DEFAULT '',
   due_at TEXT DEFAULT '',
   every INTEGER DEFAULT 0,
+  bind_task TEXT DEFAULT '',
   window_minutes REAL DEFAULT 60,
   priority INTEGER DEFAULT 3,
   active INTEGER DEFAULT 1,
@@ -56,6 +57,20 @@ CREATE INDEX IF NOT EXISTS idx_pings_voice ON pings(voice_id);
 """
 
 
+# 老库迁移：CREATE TABLE IF NOT EXISTS 不会给已存在的表补列，逐列 ALTER
+_MIGRATIONS = (
+    ("voices", "bind_task", "TEXT DEFAULT ''"),
+)
+
+
+def _migrate(conn: sqlite3.Connection):
+    existing = {r["name"] for r in conn.execute(
+        "SELECT name FROM pragma_table_info('voices')")}
+    for table, col, decl in _MIGRATIONS:
+        if col not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
+
+
 def iso(dt: datetime) -> str:
     return dt.replace(microsecond=0).isoformat()
 
@@ -82,6 +97,7 @@ class VoiceStore:
             self._conn.execute("PRAGMA busy_timeout=5000")
             self._conn.execute("PRAGMA journal_mode=WAL")   # 双进程共享必须 WAL
             self._conn.executescript(_SCHEMA)
+            _migrate(self._conn)
 
     def close(self):
         with self._lock:
@@ -123,7 +139,8 @@ class VoiceStore:
             id=r["id"], kind=r["kind"], text=r["text"], why=r["why"] or "",
             gate=r["gate"] or "", keywords=r["keywords"] or "",
             category=r["category"] or "", due_at=r["due_at"] or "",
-            every=r["every"], window_minutes=r["window_minutes"],
+            every=r["every"], bind_task=r["bind_task"] or "",
+            window_minutes=r["window_minutes"],
             priority=r["priority"], active=bool(r["active"]),
             asked_count=r["asked_count"], answered_count=r["answered_count"],
             last_fired_at=r["last_fired_at"] or "",
@@ -133,10 +150,11 @@ class VoiceStore:
         with self._lock:
             cur = self._conn.execute(
                 "INSERT INTO voices(kind,text,why,gate,keywords,category,due_at,"
-                "every,window_minutes,priority,active,created_at) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?,1,?)",
+                "every,bind_task,window_minutes,priority,active,created_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,1,?)",
                 (v.kind, v.text, v.why, v.gate, v.keywords, v.category, v.due_at,
-                 v.every, v.window_minutes, v.priority, iso(datetime.now())))
+                 v.every, v.bind_task, v.window_minutes, v.priority,
+                 iso(datetime.now())))
             v.id = cur.lastrowid
         return v
 

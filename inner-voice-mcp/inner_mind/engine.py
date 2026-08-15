@@ -7,9 +7,16 @@ from . import config as C
 from .bridge import MemoryBridge
 from .daemon import ensure_daemon
 from .models import Voice
-from .store import VoiceStore, iso
-from .triggers import cooldown_ok, dedupe_keywords, match_event, parse_when
 from .similarity import token_overlap
+from .store import VoiceStore, iso
+from .triggers import (
+    cooldown_ok,
+    dedupe_keywords,
+    match_event,
+    match_task,
+    parse_when,
+    task_affinity,
+)
 
 
 class InnerVoice:
@@ -63,6 +70,74 @@ class InnerVoice:
                 "触发词": v.keywords or v.category,
                 "冷却分钟": v.window_minutes}
 
+    def set_task_reminder(self, text: str, bind_task: str, why: str = "",
+                          priority: int = 3) -> dict:
+        """任务提醒（事件型闹钟）：完成 bind_task 那件事时提醒做 text。
+
+        与 set_alarm 的分工：set_alarm 管"几点几分"（时间到点），
+        本方法管"做完某事"（事件到点）——"延迟N分钟"类提醒主流工具
+        早已做好，这里补的是"完成 X 时顺带做 Y"的习惯配对前瞻记忆。
+        语义上锚是可复现的事件（每天睡觉、每次提交），响过不失效，
+        靠冷却防刷屏；不再需要时 deactivate_voice 停用。
+        """
+        text, bind = text.strip(), bind_task.strip()
+        if not text or not bind:
+            return {"错误": "text（提醒内容）和 bind_task（锚定任务）都不能为空"}
+        # 去重：同锚 + 近似内容的提醒只留一条（同锚不同提醒可共存）
+        for v in self.store.list_voices(active_only=True, kind="task"):
+            if v.bind_task == bind and token_overlap(v.text, text) >= 0.5:
+                return {"声音id": v.id, "类型": "任务提醒", "内容": v.text,
+                        "锚定任务": v.bind_task,
+                        "说明": "已有几乎相同的任务提醒，未重复创建"}
+        v = Voice(kind="task", text=text, why=why.strip(), bind_task=bind,
+                  window_minutes=C.TASK_COOLDOWN_MIN,
+                  priority=min(5, max(1, priority)))
+        v = self.store.add_voice(v)
+        return {"声音id": v.id, "类型": "任务提醒", "内容": v.text,
+                "锚定任务": v.bind_task,
+                "生效": f"report_task_done 汇报完成「{bind}」时叩门（事件型，无需守护进程）",
+                "冷却分钟": v.window_minutes}
+
+    def report_task_done(self, done_task: str, detail: str = "") -> dict:
+        """汇报任务完成：事件型闹钟的"到点"时刻。
+
+        命中锚定的任务提醒立即叩门；同时任务结束本身就是 task_end 闸门
+        （收尾质问、关键词便签一并过一遍），一次调用完成整个收尾仪式。
+        """
+        done_task = (done_task or "").strip()
+        if not done_task:
+            return {"错误": "done_task 不能为空"}
+        now = datetime.now()
+        fired = []
+        for v in self.store.list_voices(active_only=True, kind="task"):
+            if match_task(v.bind_task, done_task) and cooldown_ok(v, now):
+                p = self.store.add_ping(v, source="task", fired_at=now)
+                fired.append({"ping": p.id, "来源": "任务提醒", "提醒": v.text,
+                              "锚定任务": v.bind_task, "为什么": v.why,
+                              "优先级": v.priority})
+        # task_end 闸门：收尾质问 + 便签命中（与 check_gate 同一套机制）
+        gate_r = self.check_gate("task_end", context=f"{done_task} {detail}".strip())
+        out = {
+            "完成任务": done_task[:80],
+            "任务提醒": fired or "（没有锚定在这件事上的提醒）",
+            "收尾自问": gate_r["此刻该问"],
+            "待答叩门": gate_r["待答叩门"],
+        }
+        # 没命中时给"相近未中"提示：host 换个措辞重报，或直接 answer 处理
+        if not fired:
+            near = []
+            for v in self.store.list_voices(active_only=True, kind="task"):
+                a = task_affinity(v.bind_task, done_task)
+                if 0 < a <= 0.6:
+                    near.append({"锚定任务": v.bind_task, "提醒": v.text,
+                                 "亲和度": round(a, 2)})
+            near.sort(key=lambda x: -x["亲和度"])
+            if near:
+                out["相近未中"] = near[:3]
+                out["说明"] = ("这些提醒锚定的事和刚完成的有点像但没到命中线——"
+                               "如果完成的就是它们，换个更接近锚的措辞重报一次")
+        return out
+
     def preset_checklist(self, gate: str) -> dict:
         """一键登记该闸门的内置检查单（AI 可再加自己的）。"""
         if gate not in C.PRESETS:
@@ -115,7 +190,7 @@ class InnerVoice:
 
         # 3) 未答叩门（守护进程攒下的闹钟、之前命中的便签等）
         pending = self.store.open_pings(now)
-        src_cn = {"alarm": "闹钟", "event": "便签", "gate": "闸门"}
+        src_cn = {"alarm": "闹钟", "event": "便签", "gate": "闸门", "task": "任务提醒"}
         alarm_rows = [
             {"ping": p.id, "来源": src_cn.get(p.source, p.source),
              "内容": p.text, "优先级": p.priority,

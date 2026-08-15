@@ -9,6 +9,8 @@
 给宿主 LLM 的使用心法：
 - 开始/结束任务、提交代码、回答问题前：check_gate 过一遍自己设的质问
 - 想到"睡前要做X""明天要提醒Y"：set_alarm / set_note 交给守护进程
+- 想到"做完X要顺带Y"（如睡觉→给手机充电）：set_task_reminder 锚在任务上
+- 每完成一件事：report_task_done 汇报——事件型闹钟在此刻"到点"
 - 任何时刻自我怀疑：reflect 拿一份"此刻最该问自己的问题"
 - 叩门（ping）必须 answer——不答会升级萦绕；重要回答会回写长期记忆
 """
@@ -67,6 +69,21 @@ def set_alarm(text: str, when: str, every: int | None = None,
 
 
 @mcp.tool()
+def set_task_reminder(text: str, bind_task: str, why: str = "",
+                      priority: int = 3) -> dict:
+    """任务提醒（事件型闹钟）：完成 bind_task 那件事时提醒做 text。
+
+    与 set_alarm 分工：set_alarm 管"几点几分"（延迟N分钟类提醒用它/主流
+    工具），本工具管"做完某事时顺带做某事"——如"睡觉的时候给手机充电"。
+
+    参数：
+    - text: 提醒内容，如"给手机充电"
+    - bind_task: 锚定的任务（完成它即触发），写关键动作即可，如"睡觉"
+    """
+    return voice.set_task_reminder(text, bind_task, why, priority)
+
+
+@mcp.tool()
 def set_note(text: str, keywords: str, category: str = "",
              why: str = "", priority: int = 3) -> dict:
     """便签：碰到特定关键词就冒出来的提醒（事件前瞻记忆）。
@@ -100,6 +117,7 @@ def list_voices(active_only: bool = True) -> list[dict]:
         out.append({
             "id": v.id, "类型": v.kind, "内容": v.text[:80],
             "闸门": v.gate or None, "触发词": v.keywords or None,
+            "锚定任务": v.bind_task or None,
             "下次响铃": v.due_at or None,
             "循环": f"每{v.every}分钟" if v.every else None,
             "优先级": v.priority, "问过": v.asked_count,
@@ -118,6 +136,17 @@ def check_gate(gate: str, context: str = "") -> dict:
     context 传当前任务描述（便签按关键词命中它）。
     """
     return voice.check_gate(gate, context)
+
+
+@mcp.tool()
+def report_task_done(done_task: str, detail: str = "") -> dict:
+    """汇报任务完成（事件型闹钟的"到点"）：命中的任务提醒立即叩门，
+    同时过一遍 task_end 收尾质问与关键词便签。每完成一件事就调一次。
+
+    - done_task: 刚完成的事，尽量包含锚定任务的关键动作，如"睡觉前整理完床铺"
+    - detail: 可选补充（会参与便签关键词匹配）
+    """
+    return voice.report_task_done(done_task, detail)
 
 
 @mcp.tool()

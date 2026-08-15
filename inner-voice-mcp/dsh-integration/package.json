@@ -1,0 +1,9 @@
+{
+  "name": "inner-voice-dsh-bundle",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Inner Voice MCP as a DeepSeek Harness (dsh) bundle: local stdio MCP, zero server",
+  "dsh": {
+    "bundle": "./cordis.patch.yml"
+  }
+}

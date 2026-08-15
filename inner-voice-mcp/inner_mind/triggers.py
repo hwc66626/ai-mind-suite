@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 
 from . import config as C
 from .models import Voice
+from .similarity import token_overlap, tokens
 
 _hhmm_re = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)$")
 _rel_re = re.compile(r"^\+(\d+(?:\.\d+)?)([mhd])$", re.IGNORECASE)
@@ -49,6 +50,40 @@ def _norm(s: str) -> str:
     return (s or "").lower()
 
 
+def task_affinity(bind_task: str, done_task: str) -> float:
+    """锚定任务与完成描述的亲和度（0~1）：锚的词元有多大比例出现在完成描述里。
+
+    整句包含直接满分（"睡觉" in "我准备去睡觉了"）；否则按词元包含度算，
+    容忍措辞与顺序差异（"整理收件箱" vs "收件箱清理完毕" ≈ 0.8）。
+    """
+    if not bind_task or not done_task:
+        return 0.0
+    if _norm(bind_task) in _norm(done_task):
+        return 1.0
+    tb, td = tokens(bind_task), tokens(done_task)
+    if not tb or not td:
+        return 0.0
+    return len(tb & td) / len(tb)
+
+
+def match_task(bind_task: str, done_task: str) -> bool:
+    """任务完成命中判定：完成了 done_task，锚在 bind_task 的提醒该不该响。
+
+    规则：整句包含直接命中；锚 ≥3 个词元时，包含度严格 >0.6 算命中；
+    锚只有 1~2 个词元时只认整句包含（单字/单词到处出现，包含度必满分
+    会误命中）。卡在 0.6 线上的（如锚"给手机充电"遇上"给手机贴膜"，
+    共享"给手机"3/5 词元）宁可不算——报为"相近未中"，让宿主确认措辞。
+    """
+    if not bind_task or not done_task:
+        return False
+    if _norm(bind_task) in _norm(done_task):
+        return True
+    tb = tokens(bind_task)
+    if len(tb) <= 2:
+        return False
+    return task_affinity(bind_task, done_task) > 0.6
+
+
 def match_event(voice: Voice, context: str) -> tuple[bool, str]:
     """便签事件匹配：任一关键词命中即触发（返回命中的词）。"""
     ctx = _norm(context)
@@ -78,8 +113,6 @@ def cooldown_ok(voice: Voice, now: datetime) -> bool:
 
 def dedupe_keywords(existing: list[Voice], text: str, keywords: str) -> Voice | None:
     """便签去重：关键词集合重合度高 + 内容相似 -> 返回已存在的声音。"""
-    from .similarity import token_overlap
-
     new_kw = {k.strip().lower() for k in keywords.split(",") if k.strip()}
     if not new_kw:
         return None

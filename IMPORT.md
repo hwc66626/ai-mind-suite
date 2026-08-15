@@ -8,7 +8,7 @@
 |---|---|---|---|
 | `brain-memory-mcp` | 记忆机制：双强度遗忘曲线、类内局部权重、目标全局加权、情绪加权、工作记忆、联想扩散、软纠错、**上下文策展** | 21 | `~/.brain_memory/memory.db` |
 | `logic-thinking-mcp` | 逻辑与思维：S1/S2 路由、注意力预算、前景理论、反事实基线、举证账本+法律证明标准、图尔敏论证、MEA 规划、八步决断闸门 | 18 | `~/.logic_mind/mind.db` |
-| `inner-voice-mcp` | 内心声音：AI 自己设的闸门质问、闹钟、便签、反思；独立守护进程，会话全关闹钟仍在走 | 13 | `~/.inner_mind/voice.db` |
+| `inner-voice-mcp` | 内心声音：AI 自己设的闸门质问、闹钟、任务提醒（事件型闹钟）、便签、反思；独立守护进程，会话全关闹钟仍在走 | 15 | `~/.inner_mind/voice.db` |
 
 三者通过**同一份记忆库**协同（后两个直读 brain-memory 的数据库），且均可单独导入：
 桥接失败时自动优雅降级，不影响自身功能。
@@ -39,6 +39,7 @@ ai-mind-suite/
     ├── server.py              ← MCP 入口
     ├── daemon.py              ← 守护进程手动启停入口
     ├── inner_mind/            ← 引擎（engine/store/daemon/triggers/bridge/...）
+    ├── dsh-integration/       ← DeepSeek Harness（dsh）接入包
     └── tests/  demo.py  README.md  requirements.txt
 ```
 
@@ -56,7 +57,7 @@ cd ../logic-thinking-mcp && python3 demo.py && python3 tests/test_reasoning.py
 cd ../inner-voice-mcp  && python3 demo.py && INNER_MIND_NO_DAEMON=1 python3 tests/test_voice.py
 ```
 
-全部跑通 = 132 项断言绿（11+24 / 53 / 44）。demo 用的是临时库，跑完即弃，不污染正式库。
+全部跑通 = 154 项断言绿（11+24 / 53 / 66）。demo 用的是临时库，跑完即弃，不污染正式库。
 
 ## 第四步：导入 MCP 客户端
 
@@ -104,7 +105,8 @@ Windows 用户：`command` 用 `"python"` 或 `"py"`；若客户端找不到 pyt
 2. **策展**：开工前让 AI 调 `context_pack(task="...")`，确认返回的是按 token 预算打包的注入块而不是记忆堆
 3. **思维**：给一个有风险的决定，看 AI 是否走 `quick_think` → 升级 → `frame_problem` 起手八步框架，且未取得 `decide` 的执行许可前不动手
 4. **内心声音**：让 AI `set_alarm(text="提醒我复盘", when="2分钟后")`，关掉会话等两分钟重开，调 `inbox` 应看到守护进程攒下的叩门
-5. **守护进程**：调 `daemon_status`，应显示运行中、心跳时间、单实例锁
+5. **任务提醒（事件型闹钟）**：`set_task_reminder(text="给手机充电", bind_task="睡觉")` 后，`report_task_done(done_task="今晚准备睡觉了")` 应立即弹出充电提醒
+6. **守护进程**：调 `daemon_status`，应显示运行中、心跳时间、单实例锁
 
 ## 三者如何协同
 

@@ -22,3 +22,6 @@ Thumbs.db
 # 交付物与临时文件
 *.zip
 .screenshots/
+
+# 沙箱上传物
+.uploads/

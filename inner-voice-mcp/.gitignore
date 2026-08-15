@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# 本机生成物：dsh patch 写死了本机绝对路径，用 install_dsh.py 重新生成
+dsh-integration/cordis.patch.yml
+
+# 数据库与密钥
+*.db
+*.db-wal
+*.db-shm
+.env
+
+# 工具缓存
+.ruff_cache/
+.DS_Store

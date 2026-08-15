@@ -23,7 +23,8 @@ from inner_mind import config as C                     # noqa: E402
 from inner_mind.daemon import VoiceDaemon              # noqa: E402
 from inner_mind.engine import InnerVoice               # noqa: E402
 from inner_mind.store import VoiceStore, iso           # noqa: E402
-from inner_mind.triggers import cooldown_ok, match_event, parse_when  # noqa: E402
+from inner_mind.triggers import (cooldown_ok, match_event, match_task,   # noqa: E402
+                                 parse_when, task_affinity)
 
 PASS, FAIL = 0, 0
 
@@ -231,6 +232,82 @@ def main():
     check("不存在的声音停用报错", "错误" in e6.deactivate_voice(999))
     check("冷却：从未触发过则允许", cooldown_ok(
         V(id=1, kind="note", window_minutes=60), datetime.now()))
+
+    print("\n[11] 任务提醒：事件型闹钟（以任务为锚）")
+    check("亲和度：整句包含满分", task_affinity("睡觉", "我准备去睡觉了") == 1.0)
+    check("亲和度：措辞顺序差异仍高",
+          task_affinity("整理收件箱", "收件箱清理完毕") >= 0.8)
+    check("命中：短锚整句包含", match_task("睡觉", "洗漱完准备睡觉"))
+    check("不命中：短锚未包含", not match_task("充电", "手机贴膜完成"))
+    check("不命中：长锚包含度不足",
+          not match_task("给手机充电", "给手机贴了个新膜"), ">2词元但词元大多不同")
+    check("命中：长锚词元包含度过线",
+          match_task("提交周报", "写完了周报并提交给主管"))
+
+    e7 = new_engine()
+    e7.ask_myself("这次踩的坑值得写进长期记忆吗？", "", "task_end")
+    r = e7.set_task_reminder("给手机充电", "睡觉", "习惯配对")
+    check("任务提醒登记", r["类型"] == "任务提醒" and r["锚定任务"] == "睡觉", str(r))
+    r2 = e7.set_task_reminder("给手机充上电", "睡觉", "重复")
+    check("同锚近似内容去重", "未重复创建" in r2.get("说明", ""), str(r2))
+    r3 = e7.set_task_reminder("顺便拉伸", "睡觉", "同锚不同提醒")
+    check("同锚不同提醒共存", r3.get("声音id") != r["声音id"])
+    e7.set_task_reminder("复核报销单据", "提交周报")
+
+    rep = e7.report_task_done("今晚准备睡觉了", "洗漱完成")
+    fired = rep["任务提醒"]
+    check("完成睡觉触发充电提醒",
+          any(x["提醒"] == "给手机充电" for x in fired), str(fired))
+    check("同锚的另一条也触发", any(x["提醒"] == "顺便拉伸" for x in fired))
+    check("未完成的锚不触发", all("报销" not in x["提醒"] for x in fired))
+    check("收尾自问一并触发（task_end 闸门）",
+          any("长期记忆" in x.get("内容", "") for x in rep["收尾自问"])
+          if isinstance(rep["收尾自问"], list) else False, str(rep["收尾自问"])[:120])
+    tp = [p for p in e7.store.open_pings(datetime.now()) if p.kind == "task"]
+    check("叩门入收件箱且来源=task", tp and all(p.source == "task" for p in tp))
+    a = e7.answer(fired[0]["ping"], "已插上充电器", "done")
+    check("任务提醒可回答", a.get("结果") == "done", str(a))
+
+    e7.report_task_done("现在正式睡觉了")   # 再报一次睡觉
+    open_task = [p for p in e7.store.open_pings(datetime.now())
+                 if p.kind == "task"]
+    check("冷却期内不重复叩门（只剩拉伸那条未答）",
+          len(open_task) == 1 and "拉伸" in open_task[0].text, str(open_task))
+
+    e7.set_task_reminder("先备份数据库", "整理实验数据")
+    rep3 = e7.report_task_done("整理桌面并归档文件")
+    near = rep3.get("相近未中")
+    check("相近未中给出措辞提示",
+          near and any(x["锚定任务"] == "整理实验数据" for x in near), str(near))
+
+    print("\n[12] 老库迁移：无 bind_task 列的库自动补列")
+    import sqlite3
+    old_db = os.path.join(TMP, "old.db")
+    conn = sqlite3.connect(old_db)
+    conn.execute(
+        "CREATE TABLE voices (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        " kind TEXT NOT NULL, text TEXT NOT NULL, why TEXT DEFAULT '',"
+        " gate TEXT DEFAULT '', keywords TEXT DEFAULT '',"
+        " category TEXT DEFAULT '', due_at TEXT DEFAULT '',"
+        " every INTEGER DEFAULT 0, window_minutes REAL DEFAULT 60,"
+        " priority INTEGER DEFAULT 3, active INTEGER DEFAULT 1,"
+        " asked_count INTEGER DEFAULT 0, answered_count INTEGER DEFAULT 0,"
+        " last_fired_at TEXT DEFAULT '', last_answered_at TEXT DEFAULT '',"
+        " created_at TEXT NOT NULL)")
+    conn.execute("INSERT INTO voices(kind,text,created_at)"
+                 " VALUES('alarm','老闹钟','2026-01-01T00:00:00')")
+    conn.commit()
+    conn.close()
+    st_old = VoiceStore(old_db)   # 打开即迁移
+    cols = {r["name"] for r in
+            st_old._conn.execute("SELECT name FROM pragma_table_info('voices')")}
+    check("老库自动补 bind_task 列", "bind_task" in cols, str(cols))
+    old_v = st_old.list_voices(active_only=False)[0]
+    check("老数据可读且锚为空", old_v.text == "老闹钟" and old_v.bind_task == "")
+    nv = st_old.add_voice(V(kind="task", text="新提醒", bind_task="睡觉",
+                            window_minutes=10))
+    check("迁移后的库可写任务提醒",
+          st_old.get_voice(nv.id).bind_task == "睡觉")
 
     print(f"\n========== 通过 {PASS} / 失败 {FAIL} ==========")
     return 1 if FAIL else 0
