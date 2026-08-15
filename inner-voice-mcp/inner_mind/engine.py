@@ -32,8 +32,7 @@ class InnerVoice:
                   gate=gate, window_minutes=C.GATE_COOLDOWN_MIN,
                   priority=min(5, max(1, priority)))
         v = self.store.add_voice(v)
-        return {"声音id": v.id, "类型": "闸门质问", "闸门": gate,
-                "内容": v.text, "生效": f"每次 {gate} 时自问（冷却{v.window_minutes:.0f}分钟）"}
+        return {"声音id": v.id, "闸门": gate, "内容": v.text}
 
     def set_alarm(self, text: str, when: str, every: int | None = None,
                   why: str = "", priority: int = 3) -> dict:
@@ -46,10 +45,8 @@ class InnerVoice:
                   priority=min(5, max(1, priority)))
         v = self.store.add_voice(v)
         ensure_daemon(self.store)   # 有闹钟必须有生物钟
-        return {"声音id": v.id, "类型": "闹钟",
-                "下次响铃": v.due_at,
-                "循环": f"每{recur}分钟" if recur else "一次性",
-                "内容": v.text}
+        return {"声音id": v.id, "下次响铃": v.due_at,
+                "循环": f"每{recur}分钟" if recur else "一次性", "内容": v.text}
 
     def set_note(self, text: str, keywords: str, category: str = "",
                  why: str = "", priority: int = 3) -> dict:
@@ -58,17 +55,13 @@ class InnerVoice:
         dup = dedupe_keywords(self.store.list_voices(active_only=True), text,
                               keywords)
         if dup:
-            return {"声音id": dup.id, "类型": "便签", "内容": dup.text,
-                    "说明": "已有几乎相同的便签，未重复创建（冷却已重置）",
-                    "关键词": dup.keywords}
+            return {"声音id": dup.id, "说明": "已有近似便签，未新建"}
         v = Voice(kind="note", text=text.strip(), why=why.strip(),
                   keywords=keywords.strip(), category=category.strip(),
                   window_minutes=C.NOTE_COOLDOWN_MIN,
                   priority=min(5, max(1, priority)))
         v = self.store.add_voice(v)
-        return {"声音id": v.id, "类型": "便签", "内容": v.text,
-                "触发词": v.keywords or v.category,
-                "冷却分钟": v.window_minutes}
+        return {"声音id": v.id, "触发词": v.keywords or v.category}
 
     def set_task_reminder(self, text: str, bind_task: str, why: str = "",
                           priority: int = 3) -> dict:
@@ -86,16 +79,13 @@ class InnerVoice:
         # 去重：同锚 + 近似内容的提醒只留一条（同锚不同提醒可共存）
         for v in self.store.list_voices(active_only=True, kind="task"):
             if v.bind_task == bind and token_overlap(v.text, text) >= 0.5:
-                return {"声音id": v.id, "类型": "任务提醒", "内容": v.text,
-                        "锚定任务": v.bind_task,
-                        "说明": "已有几乎相同的任务提醒，未重复创建"}
+                return {"声音id": v.id, "锚定任务": v.bind_task,
+                        "说明": "已有近似提醒，未新建"}
         v = Voice(kind="task", text=text, why=why.strip(), bind_task=bind,
                   window_minutes=C.TASK_COOLDOWN_MIN,
                   priority=min(5, max(1, priority)))
         v = self.store.add_voice(v)
-        return {"声音id": v.id, "类型": "任务提醒", "内容": v.text,
-                "锚定任务": v.bind_task,
-                "生效": f"report_task_done 汇报完成「{bind}」时叩门（事件型，无需守护进程）",
+        return {"声音id": v.id, "内容": v.text, "锚定任务": v.bind_task,
                 "冷却分钟": v.window_minutes}
 
     def report_task_done(self, done_task: str, detail: str = "") -> dict:
@@ -109,20 +99,22 @@ class InnerVoice:
             return {"错误": "done_task 不能为空"}
         now = datetime.now()
         fired = []
+        new_ids: set[int] = set()   # 本次刚产生的叩门：不能再进"待答叩门"重复列出
         for v in self.store.list_voices(active_only=True, kind="task"):
             if match_task(v.bind_task, done_task) and cooldown_ok(v, now):
                 p = self.store.add_ping(v, source="task", fired_at=now)
-                fired.append({"ping": p.id, "来源": "任务提醒", "提醒": v.text,
-                              "锚定任务": v.bind_task, "为什么": v.why,
-                              "优先级": v.priority})
+                new_ids.add(p.id)
+                fired.append({"ping": p.id, "提醒": v.text, "锚定任务": v.bind_task})
         # task_end 闸门：收尾质问 + 便签命中（与 check_gate 同一套机制）
-        gate_r = self.check_gate("task_end", context=f"{done_task} {detail}".strip())
+        gate_r = self.check_gate("task_end", context=f"{done_task} {detail}".strip(),
+                                 exclude_ids=new_ids)
         out = {
             "完成任务": done_task[:80],
             "任务提醒": fired or "（没有锚定在这件事上的提醒）",
             "收尾自问": gate_r["此刻该问"],
-            "待答叩门": gate_r["待答叩门"],
         }
+        if gate_r["待答叩门"] != "（无）":
+            out["待答叩门"] = gate_r["待答叩门"]
         # 没命中时给"相近未中"提示：host 换个措辞重报，或直接 answer 处理
         if not fired:
             near = []
@@ -133,9 +125,8 @@ class InnerVoice:
                                  "亲和度": round(a, 2)})
             near.sort(key=lambda x: -x["亲和度"])
             if near:
-                out["相近未中"] = near[:3]
-                out["说明"] = ("这些提醒锚定的事和刚完成的有点像但没到命中线——"
-                               "如果完成的就是它们，换个更接近锚的措辞重报一次")
+                out["相近未中"] = near[:2]
+                out["说明"] = "若完成的就是它们，换更接近锚的措辞重报一次"
         return out
 
     def preset_checklist(self, gate: str) -> dict:
@@ -158,17 +149,21 @@ class InnerVoice:
         if not v:
             return {"错误": f"声音不存在：{voice_id}"}
         self.store.update_voice_fields(voice_id, active=0)
-        return {"已停用": voice_id, "内容": v.text, "停用原因": why or "（未填）",
-                "说明": "声音永不物理删除，历史与统计完整保留"}
+        return {"已停用": voice_id, "内容": v.text[:60]}
 
     # ================= 闸门与收件箱 =================
-    def check_gate(self, gate: str, context: str = "") -> dict:
-        """此刻该问自己什么：闸门质问 + 命中便签 + 守护进程攒下的叩门。"""
+    def check_gate(self, gate: str, context: str = "",
+                   exclude_ids: set[int] | None = None) -> dict:
+        """此刻该问自己什么：闸门质问 + 命中便签 + 守护进程攒下的叩门。
+
+        exclude_ids：调用方（如 report_task_done）已单独展示过的叩门 id，
+        不再进"待答叩门"重复列出。
+        """
         if gate not in C.GATES:
             gate = "any"
         now = datetime.now()
         fired = []
-        fired_ids: set[int] = set()   # 本次调用刚产生的叩门：下面不再重复列出
+        fired_ids: set[int] = set(exclude_ids or ())
 
         # 1) 闸门质问（冷却内的不再问）
         for v in self.store.list_voices(active_only=True, kind="question",
@@ -176,9 +171,8 @@ class InnerVoice:
             if cooldown_ok(v, now):
                 p = self.store.add_ping(v, source="gate", fired_at=now)
                 fired_ids.add(p.id)
-                fired.append({"ping": p.id, "来源": "闸门", "类型": "质问",
-                              "内容": v.text, "优先级": v.priority,
-                              "为什么": v.why})
+                fired.append({"ping": p.id, "来源": "闸门", "内容": v.text,
+                              "优先级": v.priority})
 
         # 2) 便签：当前上下文命中关键词（事件前瞻记忆）
         if context.strip():
@@ -187,9 +181,8 @@ class InnerVoice:
                 if hit and cooldown_ok(v, now):
                     p = self.store.add_ping(v, source="event", fired_at=now)
                     fired_ids.add(p.id)
-                    fired.append({"ping": p.id, "来源": f"便签命中「{kw}」",
-                                  "类型": "提醒", "内容": v.text,
-                                  "优先级": v.priority, "为什么": v.why})
+                    fired.append({"ping": p.id, "来源": f"便签「{kw}」",
+                                  "内容": v.text, "优先级": v.priority})
 
         # 3) 未答叩门（守护进程攒下的闹钟等"历史"叩门；刚在本调用里
         #    触发过的已在"此刻该问"里，再列一遍会让宿主重复作答）
@@ -197,18 +190,17 @@ class InnerVoice:
         src_cn = {"alarm": "闹钟", "event": "便签", "gate": "闸门", "task": "任务提醒"}
         alarm_rows = [
             {"ping": p.id, "来源": src_cn.get(p.source, p.source),
-             "内容": p.text, "优先级": p.priority,
-             "升级": p.escalated or None, "响于": p.fired_at}
+             "内容": p.text[:60], "优先级": p.priority,
+             **({"升级": p.escalated} if p.escalated else {})}
             for p in pending
             if p.source != "gate" and p.id not in fired_ids
-        ][:10]
+        ][:5]
 
         return {
             "闸门": gate,
-            "此刻该问": fired or "（这个闸门没有待问的——可 preset_checklist 预设）",
+            "此刻该问": fired or "（无）",
             "待答叩门": alarm_rows or "（无）",
             "总数": len(fired) + len(alarm_rows),
-            "说明": "回答走 answer(ping_id)；回答会回写长期记忆（如桥可用）",
         }
 
     def inbox(self, limit: int = 20) -> dict:
@@ -217,12 +209,11 @@ class InnerVoice:
         rows = self.store.open_pings(now, limit=limit)
         return {
             "未答叩门": [
-                {"ping": p.id, "类型": p.kind, "来源": p.source, "内容": p.text,
-                 "优先级": p.priority, "升级": p.escalated or None,
-                 "响于": p.fired_at}
+                {"ping": p.id, "来源": p.source, "内容": p.text[:60],
+                 "优先级": p.priority,
+                 **({"升级": p.escalated} if p.escalated else {})}
                 for p in rows],
             "统计": self.store.ping_stats(),
-            "说明": "升级次数>0 的是萦绕了太久的问题（蔡格尼克效应），先处理它们",
         }
 
     def answer(self, ping_id: int, answer: str, outcome: str = "done",
@@ -241,10 +232,9 @@ class InnerVoice:
             r = self.bridge.remember(
                 f"自问：{p.text}\n自答：{answer.strip()}",
                 importance=0.6, categories=categories or ["内省"])
-            memo = r.get("id") or r.get("error")
-        return {"ping": ping_id, "结果": outcome, "内容": p.text,
-                "回答": answer.strip()[:200],
-                "已写入长期记忆": memo if memo else "（未写入：桥不可用或答案为空）"}
+            memo = r.get("id") or ""
+        return {"ping": ping_id, "结果": outcome, "内容": p.text[:60],
+                "回答": answer.strip()[:120], "记忆": memo or ""}
 
     def snooze(self, ping_id: int, minutes: int = C.ALARM_SNOOZE_MIN) -> dict:
         until = datetime.now() + timedelta(minutes=max(1, minutes))
@@ -276,8 +266,6 @@ class InnerVoice:
             out["一直在逃避"] = (f"共 {stats['被小睡']} 次小睡——"
                                "这些事一直在被推迟，值得正面回答一次")
         out["统计"] = stats
-        out["建议"] = ("复盘本身也值得周期化：set_alarm('每周日 21:00 复盘内心声音', "
-                       "'21:00', priority=4)")
         return {k: (v if v else "（无）") for k, v in out.items()}
 
     def reflect(self, context: str, n: int = C.REFLECT_MAX) -> dict:
@@ -311,5 +299,4 @@ class InnerVoice:
                 break
             questions.append({"问题": q, "来源": "记忆对照"})
 
-        return {"上下文": context[:60], "自问清单": questions[:n],
-                "说明": "回答不必入库；真正重要的发现用 ask_myself 固化为闸门质问"}
+        return {"上下文": context[:60], "自问清单": questions[:n]}

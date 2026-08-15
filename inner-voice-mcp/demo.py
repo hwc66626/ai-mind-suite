@@ -73,6 +73,16 @@ def main():
     print("\n== 6. 即时自问与复盘 ==")
     show("reflect", v.reflect("我要重构支付验签模块", 4))
     show("review", v.review())
+
+    print("\n== 7. 任务提醒：事件型闹钟（以任务为锚） ==")
+    show("锚定任务（睡觉→充电）", v.set_task_reminder(
+        "给手机充电", "睡觉", "习惯配对：睡觉前顺手充电"))
+    show("同锚再加一条", v.set_task_reminder(
+        "顺便拉伸两分钟", "睡觉", "久坐矫正"))
+    show("近似重复被去重", v.set_task_reminder("手机充上电", "睡觉"))
+    show("汇报完成（措辞与锚不同也能命中）", v.report_task_done(
+        "今晚洗漱完，准备上床睡觉了"))
+    show("冷却内再报一次（不刷屏）", v.report_task_done("现在正式睡觉了"))
     print("\n演示完毕，数据库在：", TMP)
 
 

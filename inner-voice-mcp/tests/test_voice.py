@@ -72,14 +72,14 @@ def main():
     print("\n[2] 登记内心声音")
     e = new_engine()
     r = e.ask_myself("测试全绿了吗？", "回归风险", "before_commit")
-    check("质问登记", r["类型"] == "闸门质问" and r["闸门"] == "before_commit")
+    check("质问登记", r["闸门"] == "before_commit" and r["声音id"] > 0, str(r))
     r = e.set_alarm("睡觉前给手机充电", "23:00")
     check("闹钟登记（每日23:00）", "23" in r["下次响铃"] and r["循环"] == f"每{C.DAILY}分钟",
           str(r))
     r2 = e.set_alarm("睡觉前给手机充电", "23:30")
     check("同文闹钟不去重也可共存", r2["声音id"] != r["声音id"])
     r = e.set_note("改验签前先查生产环境密钥配置", "支付,验签,回调")
-    check("便签登记", r["类型"] == "便签" and "支付" in r["触发词"])
+    check("便签登记", "支付" in r["触发词"] and r["声音id"] > 0, str(r))
     r2 = e.set_note("改验签前先查生产环境的密钥配置", "支付,验签,签名")
     check("近重复便签去重", r2.get("说明", "").startswith("已有"), str(r2))
     pre = e.preset_checklist("before_commit")
@@ -89,7 +89,7 @@ def main():
           pre["新增"] >= 1 and pre2["新增"] == 0
           and all(all_texts.count(t) == 1 for t in pre["检查单"]), f"{pre2}")
     d = e.deactivate_voice(r2["声音id"], "重复")
-    check("停用不删除", "永不物理删除" in d["说明"])
+    check("停用不删除", "已停用" in d and d["已停用"] == r2["声音id"], str(d))
 
     print("\n[3] 守护进程 tick：闹钟与升级")
     store = VoiceStore(os.path.join(TMP, "d1.db"))
@@ -156,7 +156,7 @@ def main():
     check("其他闸门的质问不触发",
           not any("现编" in x["内容"] for x in asked))
     r2 = e2.check_gate("before_commit", context="支付验签")
-    check("冷却期内不重复问", r2["此刻该问"] == "（这个闸门没有待问的——可 preset_checklist 预设）"
+    check("冷却期内不重复问", r2["此刻该问"] == "（无）"
           or all("测试全绿" not in x.get("内容", "") for x in r2["此刻该问"]),
           str(r2["此刻该问"]))
     hit, kw = match_event(
@@ -171,8 +171,8 @@ def main():
     p = e2.store.add_ping(vv, source="gate", fired_at=datetime.now())
     a = e2.answer(p.id, "有每日快照，且走软删除标记", "done", remember=True)
     check("回答成功", a.get("结果") == "done", str(a))
-    check("问答回写长期记忆", isinstance(a.get("已写入长期记忆"), str)
-          and a["已写入长期记忆"].startswith("m_"), str(a))
+    check("问答回写长期记忆", isinstance(a.get("记忆"), str)
+          and a["记忆"].startswith("m_"), str(a))
     rec = e2.bridge.recall("删库前备份")
     check("长期记忆可召回该问答",
           any("备份" in (m.get("content") or m.get("内容") or "") for m in rec),
@@ -247,9 +247,9 @@ def main():
     e7 = new_engine()
     e7.ask_myself("这次踩的坑值得写进长期记忆吗？", "", "task_end")
     r = e7.set_task_reminder("给手机充电", "睡觉", "习惯配对")
-    check("任务提醒登记", r["类型"] == "任务提醒" and r["锚定任务"] == "睡觉", str(r))
+    check("任务提醒登记", r["锚定任务"] == "睡觉" and r["内容"] == "给手机充电", str(r))
     r2 = e7.set_task_reminder("给手机充上电", "睡觉", "重复")
-    check("同锚近似内容去重", "未重复创建" in r2.get("说明", ""), str(r2))
+    check("同锚近似内容去重", "未新建" in r2.get("说明", ""), str(r2))
     r3 = e7.set_task_reminder("顺便拉伸", "睡觉", "同锚不同提醒")
     check("同锚不同提醒共存", r3.get("声音id") != r["声音id"])
     e7.set_task_reminder("复核报销单据", "提交周报")
@@ -265,6 +265,15 @@ def main():
           if isinstance(rep["收尾自问"], list) else False, str(rep["收尾自问"])[:120])
     tp = [p for p in e7.store.open_pings(datetime.now()) if p.kind == "task"]
     check("叩门入收件箱且来源=task", tp and all(p.source == "task" for p in tp))
+    # 回归：刚触发的任务叩门不得再进"待答叩门"重复列出（token 浪费+重复作答）
+    if isinstance(rep.get("待答叩门"), list):
+        fired_ids_ = {x["ping"] for x in fired}
+        check("任务叩门不在待答列表重复",
+              all(x["ping"] not in fired_ids_ for x in rep["待答叩门"]),
+              str(rep["待答叩门"])[:120])
+    else:
+        check("任务叩门不在待答列表重复",
+              rep.get("待答叩门") in (None, "（无）"), str(rep.get("待答叩门")))
     a = e7.answer(fired[0]["ping"], "已插上充电器", "done")
     check("任务提醒可回答", a.get("结果") == "done", str(a))
 

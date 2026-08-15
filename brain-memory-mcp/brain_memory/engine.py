@@ -393,9 +393,13 @@ class BrainMemory:
 
     # ================= 工作记忆（RAM） =================
     def _admit_working_set(self, m: Memory, now: datetime) -> bool:
-        """准入规则：重要性 ≥0.5 强制驻留；否则仅在 RAM 有空位时进入。"""
-        items = self.store.ws_list()
+        """准入规则：重要性 ≥0.5 强制驻留；否则仅在 RAM 有空位时进入。
+
+        必须先过期再数容量：TTL 已过的条目在下一次过期清理前仍占着
+        名额，先数会把本可腾出的位置判成"满员"而拒绝准入。
+        """
         self._expire_working_set(now)
+        items = self.store.ws_list()
         if m.importance >= 0.5 or len(items) < C.WORKING_SET_CAPACITY:
             self._touch_working_set(m, now, clamp(0.4 + 0.6 * m.importance, 0.0, 1.0))
             return True

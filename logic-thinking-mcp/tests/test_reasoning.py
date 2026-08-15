@@ -145,6 +145,17 @@ def test_dung():
     check("弱支持驳不倒 -> 主张仍被击败", r3["label"] == "out", r3["label"])
     r4 = ARG.evaluate_argument([], "路线可行")
     check("无质疑 -> 主张成立", r4["label"] == "in", r4["label"])
+    # 回归：多个辩护者压同一质疑。旧版只把 defenders[0] 加进节点表，
+    # 第二个支持证据有边无节点 -> grounded_labeling KeyError 崩溃
+    r5 = ARG.evaluate_argument([ev("atk", -1, 1.0), ev("s1", 1, 1.2),
+                                ev("s2", 1, 1.5)], "路线可行")
+    check("多辩护者不崩溃且主张成立", r5["label"] == "in", r5["label"])
+    check("多辩护者驳倒数正确", r5["攻击与驳倒"][0]["驳倒者数"] == 2,
+          str(r5["攻击与驳倒"]))
+    # 回归：同一支持证据防御两条质疑（节点去重路径）
+    r6 = ARG.evaluate_argument([ev("atk1", -1, 1.0), ev("atk2", -1, 1.2),
+                                ev("sup", 1, 1.5)], "路线可行")
+    check("一辩双驳不崩溃且主张成立", r6["label"] == "in", r6["label"])
 
 
 # ============================================================ 6. 状态机闸门
@@ -261,6 +272,21 @@ def test_full_loop():
     check("零证据论证不通过", "尚不可行" in pr2.get("结论", ""), str(pr2)[:120])
     d2 = e.decide(t2)
     check("闸门拒绝未举证路线", d2.get("许可") is False, str(d2)[:100])
+
+    # 回归（端到端）：多条强支持证据压一条质疑 -> prove 旧版经
+    # evaluate_argument 触发 KeyError，宿主调 prove_route 直接崩
+    fr3 = e.frame("回归场景", "验证多辩护者不崩溃", risk_level="low")
+    t3 = fr3["trace_id"]
+    e.propose_options(t3, [{"name": "方案甲", "benefit": 0.7, "cost": 0.3}])
+    e.what_if_no_action(t3, [{"description": "进度停滞", "probability": 0.6,
+                              "impact": -0.5}])
+    e.evaluate(t3)
+    e.add_evidence(t3, "支持证据一", polarity="支持", strength="较强", route="方案甲")
+    e.add_evidence(t3, "支持证据二", polarity="支持", strength="较强", route="方案甲")
+    e.add_evidence(t3, "支持证据三", polarity="支持", strength="较强", route="方案甲")
+    e.add_evidence(t3, "质疑证据", polarity="攻击", strength="微弱", route="方案甲")
+    pr3 = e.prove(t3, "方案甲", "多条强证据支持")
+    check("多支持举证不崩溃且通过", "确实可行" in pr3.get("结论", ""), str(pr3)[:120])
 
 
 # ============================================================ 9. 工具印象 + MEA

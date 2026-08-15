@@ -167,7 +167,7 @@ def _build_pack_impl(brain, task: str, budget: int = 800, mode: str = "coding",
                     score *= cfg["tech_boost"]
                     break
         if score > 1e-4:
-            cands.append({"m": m, "sim": sim, "score": score,
+            cands.append({"m": m, "sim": sim, "score": score, "w": wc["w"],
                           "goal_boost": wc["goal_boost"],
                           "disputed": wc["disputed"]})
     if cache_friendly:
@@ -239,7 +239,9 @@ def _build_pack_impl(brain, task: str, budget: int = 800, mode: str = "coding",
         if cfg["keep_source"] and c["m"].source:
             item["出处"] = c["m"].source[:40]
         mem_rows.append(item)
-        selected_ids[c["m"].id] = round(c["score"], 4)
+        # 存"权重分量"而非 sim×score：淘汰对比要的是纯衰减信号，
+        # 混入任务相似度会让不同任务的两次打包不可比（见 _evict_hints）
+        selected_ids[c["m"].id] = round(c["w"], 4)
     if mem_rows:
         blocks.append({"块": f"相关记忆（{len(mem_rows)}条）",
                        "条目": mem_rows,
@@ -288,7 +290,15 @@ def _build_pack_impl(brain, task: str, budget: int = 800, mode: str = "coding",
 
 
 def _evict_hints(brain, now: datetime, selected: dict[str, float]) -> list[dict]:
-    """对比上一次注入名单：谁已经不配继续占着上下文窗口。"""
+    """对比上一次注入名单：谁已经不配继续占着上下文窗口。
+
+    口径必须与打包时一致（见 selected_ids 的注释）：两侧都用权重分量
+    wc["w"]（内部已含 (0.2+0.8×r_now)）。此前这里算 r_now×w，既少乘了
+    打包时的任务相似度、又把 r_now 重复计入——r_now 较低的记忆即使
+    零衰减也会被判"衰减至 30% 以下"，整页误报换血建议。
+    旧库 meta 里存的可能是旧口径（sim×w ≤ w），对比偏向"继续保留"，
+    属提示性输出，不构成数据风险。
+    """
     raw = brain.store.get_meta("ctx_last_pack")
     if not raw:
         return []
@@ -305,7 +315,7 @@ def _evict_hints(brain, now: datetime, selected: dict[str, float]) -> list[dict]
             continue
         r_now = brain.retrieval_strength_now(m, now)
         wc = brain._weight_components(m, r_now)
-        new_score = r_now * wc["w"]
+        new_score = wc["w"]
         reason = None
         if m.tier == "cold":
             reason = "已滑入冷归档（遗忘曲线），不再值得占窗口"
@@ -330,15 +340,18 @@ def _tool_hints(task: str, enabled: bool) -> list[dict]:
         os.path.join(os.path.expanduser("~"), ".logic_mind", "mind.db"))
     if not os.path.exists(db):
         return []
+    conn = None
     try:
         conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=2)
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             "SELECT name, capability, confidence FROM tool_impressions "
             "ORDER BY confidence DESC LIMIT 30").fetchall()
-        conn.close()
     except sqlite3.Error:
-        return []
+        return []   # 表不存在（旧版库）或被锁：静默跳过，无工具印象而已
+    finally:
+        if conn is not None:
+            conn.close()   # 异常路径也要关：只读连接泄漏会掐住对方的 WAL 检查点
     toks = set(embed(task).keys())
     scored = []
     for r in rows:
@@ -368,9 +381,14 @@ def pack_status(brain) -> dict:
         m = brain.store.get_memory(mid)
         if not m:
             continue
+        if m.status != "normal":
+            # 与 _evict_hints 同口径：被固化吸收的记忆不该再被报"仍有效"
+            faded.append({"id": mid, "内容": _compact(m.content, 40),
+                          "原因": "已被固化合并吸收，内容并入锚点记忆"})
+            continue
         r_now = brain.retrieval_strength_now(m, now)
         wc = brain._weight_components(m, r_now)
-        cur = r_now * wc["w"]
+        cur = wc["w"]   # 与打包时同口径（旧 meta 为 sim×w，偏"保留"方向，无害）
         (kept if cur >= score * 0.3 else faded).append(
             {"id": mid, "内容": _compact(m.content, 40),
              "注入时": score, "现在": round(cur, 3)})

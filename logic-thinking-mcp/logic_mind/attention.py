@@ -21,7 +21,7 @@ def compute_salience(risk_level: str, goal_priority_norm: float,
     """
     risk = _RISK_NORM.get(risk_level, 0.55)
     arousal_term = 1.0 - abs(arousal - 0.5) * 1.2   # 倒U：0.5 处为 1
-    return clamp(0.15 * risk + 0.45 * risk
+    return clamp(0.60 * risk
                  + 0.35 * clamp(goal_priority_norm, 0.0, 1.0)
                  + 0.15 * clamp(arousal_term, 0.0, 1.0), 0.0, 1.0)
 

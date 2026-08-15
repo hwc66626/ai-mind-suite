@@ -1,14 +1,16 @@
 # AI Mind Suite
 
-给 AI 三样它天生没有的东西：**会遗忘的记忆**、**受规则约束的思维**、**提醒自己的内心声音**。
+给 AI 三样它天生没有的东西：**受规则约束的思维**、**会遗忘的记忆**、**提醒自己的内心声音**。
 
-三个独立 MCP（Model Context Protocol）服务器，共享同一份记忆库，可单独安装：
+三个独立 MCP（Model Context Protocol）服务器，共享同一份记忆库，可单独安装。
+重要性依次递减：思维与记忆是核心（怎么想、想的时候用什么），内心声音是配套
+（别在忙碌中忘了什么）——前两个独立成立，第三个依赖前两个才完整。
 
 | 服务器 | 是什么 | 工具数 |
 |---|---|---|
-| [brain-memory-mcp](brain-memory-mcp/) | 模拟人脑记忆：双强度遗忘曲线、类内局部权重、目标全局加权、情绪加权、工作记忆 RAM、联想扩散激活、软纠错、**按 token 预算策展上下文** | 21 |
 | [logic-thinking-mcp](logic-thinking-mcp/) | 重建逻辑思维：S1/S2 双通道路由、注意力预算、前景理论、反事实基线、举证账本（法律三档证明标准）、图尔敏论证、八步决断闸门——**没有许可不得执行** | 18 |
-| [inner-voice-mcp](inner-voice-mcp/) | 内心声音：AI 给自己设的闸门质问、闹钟、**任务提醒（事件型闹钟：完成某事时顺带做某事）**、便签、反思；独立守护进程，**会话全关闹钟仍在走** | 15 |
+| [brain-memory-mcp](brain-memory-mcp/) | 模拟人脑记忆：双强度遗忘曲线、类内局部权重、目标全局加权、情绪加权、工作记忆 RAM、联想扩散激活、软纠错、**按 token 预算策展上下文** | 21 |
+| [inner-voice-mcp](inner-voice-mcp/) | 内心声音（配套）：AI 给自己设的闸门质问、闹钟、**任务提醒（事件型闹钟：完成某事时顺带做某事）**、便签、反思；独立守护进程，**会话全关闹钟仍在走** | 15 |
 
 ## 设计哲学
 
@@ -78,7 +80,7 @@ cd ../logic-thinking-mcp && python3 tests/test_reasoning.py
 cd ../inner-voice-mcp  && python3 tests/test_voice.py && python3 tests/test_daemon_live.py
 ```
 
-174 项断言 + 端到端场景 17 步，CI 覆盖 Ubuntu / Windows / macOS × Python 3.10–3.12。
+178 项断言 + 端到端场景 17 步，CI 覆盖 Ubuntu / Windows / macOS × Python 3.10–3.12。
 
 ## 许可
 

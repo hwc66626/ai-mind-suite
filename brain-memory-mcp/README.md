@@ -50,7 +50,8 @@
 ```bash
 pip install -r requirements.txt   # 只需要官方 mcp SDK，核心引擎零依赖
 python demo.py                    # 先看 7 幕机制演示（临时库，跑完即弃）
-python tests/test_lifecycle.py    # 11 组机制断言
+python tests/test_lifecycle.py    # 12 组机制断言
+python tests/test_context.py      # 24 项上下文策展断言
 ```
 
 接入 MCP 客户端（参考 `config.example.json`）：
@@ -201,6 +202,23 @@ merged 归属移除）；跨进程（桥回写）以 3 秒 TTL 兜底。三个�
 ## 工程参考
 
 设计吸收了这些开源项目的成熟模式：[mem0](https://github.com/mem0ai/mem0)（写入决策与实体链接）、[Letta/MemGPT](https://github.com/letta-ai/letta)（分层记忆：常驻块 vs 外部存储）、[Graphiti](https://github.com/getzep/graphiti)（时序有效性、失效而非删除）、[doobidoo/mcp-memory-service](https://github.com/doobidoo/mcp-memory-service)（指数衰减评分与受控遗忘）、[官方 memory server](https://github.com/modelcontextprotocol/servers/tree/main/src/memory)（工具面设计）。
+
+## 客观限制
+
+1. **本地稀疏向量不是语义理解。** 相似度是字符 bigram + 词元哈希的余弦：
+   "部署失败"与"发布出错"零共同词元，检索不到；换同义措辞就丢。要真语义
+   需接 `BM_EMBEDDING=openai`（API 依赖，离线兜底始终是本地实现）。
+2. **遗忘是拍出来的曲线。** R=e^(-t/S) 的参数（初始稳定性 1 天、增益 1.8、
+   冷阈值 0.05）取自间隔重复文献的典型值，没有针对 AI 会话数据校准过。
+   `BM_*` 环境变量全可调。
+3. **固化吸收不保证语义无损。** 相似度 >0.92 的两条合并，原文保留但默认
+   检索不再返回——如果两条实际含义有细微差别，细节只存在原文里。
+4. **工作记忆容量 7 是 Cowan/Miller 的经典值，不是调优结果。** 对长上下文
+   会话可能太小，`BM_WORKING_SET_CAPACITY` 可改。
+5. **21 个工具定义每轮进 prompt（实测约 1870 tok）。** 同上，短会话是纯
+   开销；宿主端在工具定义前插入变动内容则前缀缓存命中作废（`context_pack`
+   的缓存友好排序只保证本工具输出块的字节级稳定，管不到宿主怎么拼包）。
+6. **单机单用户。** SQLite 单文件，无同步、无鉴权、无多端。
 
 ## 路线图
 

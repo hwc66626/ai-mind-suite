@@ -120,20 +120,23 @@ def evaluate_argument(evidence: list[Evidence], claim: str = "主张") -> dict:
     for e in attacks_ev:
         attack_edges[f"atk:{e.id}"] = ["claim"]
 
-    # 加权击败：支持证据能压过哪个攻击者，就在 AF 中攻击它
+    # 加权击败：支持证据能压过哪个攻击者，就在 AF 中攻击它。
+    # 注意：所有参与防御的支持证据都必须成为节点——只挂边不加节点的话，
+    # grounded_labeling 查 label[attacker] 会 KeyError（第二 defender 崩溃）
+    defender_nodes: set[str] = set()
     defeat_detail = []
     for e in attacks_ev:
         defenders = [s for s in supports if s.strength >= e.strength]
         for s in defenders:
             attack_edges.setdefault(f"sup:{s.id}", []).append(f"atk:{e.id}")
-        if defenders:
-            nodes.append(f"sup:{defenders[0].id}")
+            defender_nodes.add(f"sup:{s.id}")
         defeat_detail.append({
             "质疑": e.statement[:60],
             "强度": round(e.strength, 3),
             "被驳倒": bool(defenders),
             "驳倒者数": len(defenders),
         })
+    nodes.extend(sorted(defender_nodes))
 
     label = grounded_labeling(nodes, attack_edges)
     claim_label = label.get("claim", "undec")

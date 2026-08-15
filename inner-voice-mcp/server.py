@@ -13,6 +13,9 @@
 - 每完成一件事：report_task_done 汇报——事件型闹钟在此刻"到点"
 - 任何时刻自我怀疑：reflect 拿一份"此刻最该问自己的问题"
 - 叩门（ping）必须 answer——不答会升级萦绕；重要回答会回写长期记忆
+
+token 纪律：工具描述与返回值都会进入宿主 prompt（前者每轮都在），
+描述只留一行，返回值不带样板解释。
 """
 from __future__ import annotations
 
@@ -44,85 +47,60 @@ mcp = _Server("inner-voice")
 @mcp.tool()
 def ask_myself(text: str, why: str = "", gate: str = "before_commit",
                priority: int = 3) -> dict:
-    """给自己设一条闸门质问（AI 自己写的"以后要问自己的问题"）。
-
-    参数：
-    - text: 质问内容，如"测试全绿了吗？有没有只跑了自己新写的用例？"
-    - why: 当初为什么要问（复盘时能看到依据）
-    - gate: task_start | before_answer | before_commit | before_delete | task_end | any
-    - priority: 1~5，越高越先被问
-    """
+    """挂一条闸门质问（到该闸门时自问 text）。gate: task_start|before_answer|before_commit|before_delete|task_end|any"""
     return voice.ask_myself(text, why, gate, priority)
 
 
 @mcp.tool()
 def set_alarm(text: str, when: str, every: int | None = None,
               why: str = "", priority: int = 3) -> dict:
-    """闹钟：到点由独立守护进程叩门（即使会话全关了也在走）。
-
-    参数：
-    - text: 提醒内容，如"睡觉前给手机充电"
-    - when: "23:00"（每天该时刻）| "+90m"（90分钟后）| ISO 绝对时间
-    - every: 循环间隔（分钟）；"23:00" 默认每日循环，传 0 表示一次性
-    """
+    """闹钟（守护进程到点触发）。when: "23:00"每日 | "+90m"相对 | ISO；every=0 一次性"""
     return voice.set_alarm(text, when, every, why, priority)
 
 
 @mcp.tool()
 def set_task_reminder(text: str, bind_task: str, why: str = "",
                       priority: int = 3) -> dict:
-    """任务提醒（事件型闹钟）：完成 bind_task 那件事时提醒做 text。
-
-    与 set_alarm 分工：set_alarm 管"几点几分"（延迟N分钟类提醒用它/主流
-    工具），本工具管"做完某事时顺带做某事"——如"睡觉的时候给手机充电"。
-
-    参数：
-    - text: 提醒内容，如"给手机充电"
-    - bind_task: 锚定的任务（完成它即触发），写关键动作即可，如"睡觉"
-    """
+    """事件型提醒：完成 bind_task 那件事时提醒做 text（锚写关键动作，如"睡觉"）"""
     return voice.set_task_reminder(text, bind_task, why, priority)
 
 
 @mcp.tool()
 def set_note(text: str, keywords: str, category: str = "",
              why: str = "", priority: int = 3) -> dict:
-    """便签：碰到特定关键词就冒出来的提醒（事件前瞻记忆）。
-
-    参数：
-    - text: 提醒内容，如"改验签前先查生产环境的密钥配置，别用本地的"
-    - keywords: 逗号分隔触发词，如"支付,验签,回调"——check_gate 的 context
-      里出现任一词即触发（有冷却，不会刷屏）
-    - category: 可选，限定 brain-memory 的分类路径
-    """
+    """便签：check_gate 的 context 命中任一关键词（逗号分隔）即提醒"""
     return voice.set_note(text, keywords, category, why, priority)
 
 
 @mcp.tool()
 def preset_checklist(gate: str) -> dict:
-    """一键给某闸门登记内置检查单（before_commit/before_delete 等已内置）。"""
+    """一键登记某闸门的内置检查单"""
     return voice.preset_checklist(gate)
 
 
 @mcp.tool()
 def deactivate_voice(voice_id: int, why: str = "") -> dict:
-    """停用一条内心声音（永不物理删除，历史与统计保留）。"""
+    """停用一条声音（软停用，不物理删除）"""
     return voice.deactivate_voice(voice_id, why)
 
 
 @mcp.tool()
-def list_voices(active_only: bool = True) -> list[dict]:
-    """查看我给自己设的所有内心声音（质问/便签/闹钟）及触发统计。"""
+def list_voices(active_only: bool = True, limit: int = 20) -> list[dict]:
+    """查看已登记的声音及触发统计"""
     out = []
-    for v in voice.store.list_voices(active_only=active_only):
-        out.append({
-            "id": v.id, "类型": v.kind, "内容": v.text[:80],
-            "闸门": v.gate or None, "触发词": v.keywords or None,
-            "锚定任务": v.bind_task or None,
-            "下次响铃": v.due_at or None,
-            "循环": f"每{v.every}分钟" if v.every else None,
-            "优先级": v.priority, "问过": v.asked_count,
-            "答过": v.answered_count,
-        })
+    for v in voice.store.list_voices(active_only=active_only)[:max(1, limit)]:
+        row = {"id": v.id, "类型": v.kind, "内容": v.text[:40]}
+        if v.kind == "question":
+            row["闸门"] = v.gate
+        elif v.kind == "note":
+            row["触发词"] = v.keywords or v.category
+        elif v.kind == "task":
+            row["锚定任务"] = v.bind_task
+        elif v.kind == "alarm":
+            row["下次响铃"] = v.due_at
+        row.update({"优先级": v.priority, "问过": v.asked_count,
+                    "答过": v.answered_count})
+        out.append(row)
     return out
 
 
@@ -130,44 +108,32 @@ def list_voices(active_only: bool = True) -> list[dict]:
 
 @mcp.tool()
 def check_gate(gate: str, context: str = "") -> dict:
-    """过闸门：此刻该问自己什么（当前任务切换/提交/回答/删除前调用）。
-
-    返回三部分：该闸门的质问、上下文命中的便签、守护进程攒下的闹钟叩门。
-    context 传当前任务描述（便签按关键词命中它）。
-    """
+    """过闸门：此刻该问的质问 + 命中便签 + 未答叩门。context 传当前任务描述"""
     return voice.check_gate(gate, context)
 
 
 @mcp.tool()
 def report_task_done(done_task: str, detail: str = "") -> dict:
-    """汇报任务完成（事件型闹钟的"到点"）：命中的任务提醒立即叩门，
-    同时过一遍 task_end 收尾质问与关键词便签。每完成一件事就调一次。
-
-    - done_task: 刚完成的事，尽量包含锚定任务的关键动作，如"睡觉前整理完床铺"
-    - detail: 可选补充（会参与便签关键词匹配）
-    """
+    """汇报任务完成：命中锚定的提醒立即触发，并过 task_end 收尾闸门。done_task 尽量含锚的关键动作"""
     return voice.report_task_done(done_task, detail)
 
 
 @mcp.tool()
 def inbox(limit: int = 20) -> dict:
-    """收件箱：守护进程攒下的未答叩门（升级萦绕的置顶）。"""
+    """未答叩门列表（升级的置顶）"""
     return voice.inbox(limit)
 
 
 @mcp.tool()
 def answer(ping_id: int, answer: str, outcome: str = "done",
            remember: bool = True, categories: list[str] | None = None) -> dict:
-    """回答一条叩门。默认把问答回写 brain-memory 长期记忆（内省经验沉淀）。
-
-    outcome: done（已处理）| dismissed（不适用，写明原因）
-    """
+    """回答叩门（默认回写长期记忆）。outcome: done|dismissed"""
     return voice.answer(ping_id, answer, outcome, remember, categories)
 
 
 @mcp.tool()
 def snooze(ping_id: int, minutes: int = 10) -> dict:
-    """小睡：稍后再提醒（注意 review 会统计"一直在逃避"的问题）。"""
+    """叩门小睡：稍后再提醒"""
     return voice.snooze(ping_id, minutes)
 
 
@@ -175,19 +141,19 @@ def snooze(ping_id: int, minutes: int = 10) -> dict:
 
 @mcp.tool()
 def reflect(context: str, n: int = 5) -> dict:
-    """即时自问：拿一份"此刻最该问自己的问题"（自设质问+苏格拉底模板+记忆对照）。"""
+    """即时自问清单：自设质问 + 苏格拉底模板 + 记忆对照"""
     return voice.reflect(context, n)
 
 
 @mcp.tool()
 def review() -> dict:
-    """复盘内心声音：哪些质问形同虚设、哪些便签已内化、哪些问题一直被逃避。"""
+    """复盘：形同虚设 / 已内化 / 悬而未决 / 一直在逃避"""
     return voice.review()
 
 
 @mcp.tool()
 def daemon_status() -> dict:
-    """守护进程状态：心跳、PID、是否存活。"""
+    """守护进程状态（顺带确保已拉起）"""
     ensure_daemon(voice.store)
     return _daemon_status(voice.store)
 
