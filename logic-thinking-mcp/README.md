@@ -1,0 +1,150 @@
+# Logic & Thinking MCP —— 重建 AI 的逻辑思维方式
+
+> 三部曲之二。与 [brain-memory-mcp](../brain-memory-mcp)（模拟人脑记忆机制）共享同一份
+> 长期记忆库，进程内直连，"做成一个"的兼容形态：可分别注册，也可只注册本服务
+> （记忆桥自动降级，举证改走手动提交）。
+
+## 设计理念
+
+**象棋隐喻**：AI 可以反复观看棋盘（自由查看状态），也可以选择这一步往哪走
+（提出方案、后果、证据）；但只有按照严谨规则推演出的结果——框架的评估、
+举证与决断——才是 AI 最该相信的。**不经决断闸门颁发执行许可的路线，不得执行。**
+
+框架把一次思考强制成八步状态机，每一步都是可审计的落子记录：
+
+```
+界定 frame ──> 生策 options ──> 反事实 what_if ──> 延推 extend
+     │                                            │
+     │            （注意力预算贯穿全程：显著性决定能想多深）
+     ▼                                            ▼
+复盘 review <── 决断 decide <── 举证 prove <── 权衡 evaluate
+（经验回写记忆）  （闸门：三关全过才许可）  （记忆权重=证据强度）
+```
+
+### 用户核心示例的落点
+
+> "如果 AI 发现一个任务执行难度较大会付出较为惨烈的代价，那他应该思考不去执行
+> 会导致什么样的结果？那这个结果跟目标结果哪个更好呢？"
+
+- `what_if_no_action` 强制建立**反事实基线**（"不做的世界线"），没有它权衡直接被拒
+- 目标对齐度自动匹配 brain-memory 的长期目标：**目标就是完成某任务时，收益项被
+  (1+0.8×对齐度) 放大**，高代价也值得忍痛；与目标无关时同一方案会被框架劝退
+- `decide` 三关闸门：效用（做的世界线 > 不做的世界线）+ 证明标准 + 论证框架
+
+> "假设他想执行一条路线，他需要不断地从记忆里举证，直到证明这条路线确实可行，
+> 至于该如何判定确实可行……根据举证记忆的权重来负责计算，达到一定程度就算是可行"
+
+- `gather_memory_evidence`：记忆检索的**综合权重越高，举证越有力**（权重 → 似然比）
+- 举证账本（对数几率域累加）达到**法律三档证明标准**才算可行：
+  低风险 ≥0.50（优势证据）、中风险 ≥0.75（清晰且有说服力）、高风险 ≥0.95（排除合理怀疑）
+- Dung 论证框架同时要求：所有质疑被驳倒，无悬而未决节点
+
+> "权重比较大的缓存中的记忆可以只是一个索引……我有相关的工具然后 AI 才会主动去调用"
+
+- `register_tool_impression` / `recall_tools`：工具印象**只存索引**（名字+能消减什么
+  差异+置信度），不缓存工具链本体与调用细节；命中后宿主主动查找真实工具
+- `plan_mea`（手段-目的分析）：目标特征 − 当前状态 = 差异 → 查差异-算子表（工具
+  印象）→ 前置不满足则递归设子目标；无算子可消减的差异报**能力缺口**
+
+## 安装与接入
+
+```bash
+pip install -r requirements.txt      # 仅需官方 mcp SDK，其余零依赖
+python tests/test_reasoning.py       # 50 项断言自检
+python demo.py                       # 四场景演示
+```
+
+MCP 客户端注册（stdio）：
+
+```json
+{
+  "mcpServers": {
+    "logic-thinking": {
+      "command": "python",
+      "args": ["/path/to/logic-thinking-mcp/server.py"]
+    },
+    "brain-memory": {
+      "command": "python",
+      "args": ["/path/to/brain-memory-mcp/server.py"]
+    }
+  }
+}
+```
+
+两个服务默认共享 `~/.brain_memory/memory.db`（用 `BRAIN_MEMORY_DB` 指定）；
+思考轨迹存 `~/.logic_mind/mind.db`（用 `LOGIC_MIND_DB` 指定）。brain-memory-mcp
+目录需与本项目同级（记忆桥按相对路径查找；也可用 `LT` 环境外的
+`sys.path` 自行注入）。
+
+## 工具清单（18 个）
+
+| 分组 | 工具 | 作用 |
+|---|---|---|
+| S1 快思考 | `quick_think` | 直觉答案可信度判定，不可信即升级 S2 |
+| 八步框架 | `frame_problem` | 界定：风险/目标对齐/注意力预算/证明标准 |
+| | `propose_options` | 生策：提出备选方案（收益/代价/成功率/不可逆性） |
+| | `what_if_no_action` | 反事实基线："不执行会导致什么结果"（必做） |
+| | `extend_consequences` | 延伸推演：逐层后果树，深度受注意力限制 |
+| | `evaluate_options` | 权衡：前景价值+预期后悔+满意化早停 |
+| | `gather_memory_evidence` | 记忆取证：记忆权重 → 证据强度 |
+| | `add_evidence` | 手动举证：外部证据/论据入账本 |
+| | `prove_route` | 举证论证：图尔敏+Dung+三档标准双闸门 |
+| | `decide` | 决断闸门：三关全过才颁发执行许可 |
+| | `review_outcome` | 复盘：经验回写长期记忆+工具印象更新 |
+| 审计 | `get_trace` / `list_traces` / `attention_status` | 棋盘记录查看 |
+| 工具印象 | `register_tool_impression` / `recall_tools` / `update_tool_impression` | 索引式工具缓存 |
+| 规划 | `plan_mea` | 手段-目的分析：差异→算子→子目标递归 |
+
+## 科学依据（每条机制的出处）
+
+| 机制 | 理论与出处 | 工程化 |
+|---|---|---|
+| 双通道路由 | 双过程理论（Stanovich & West；Kahneman《思考，快与慢》） | 置信<0.7 / 高风险关键词 → 强制 S2 |
+| 注意力预算 | Kahneman《Attention and Effort》1973 容量模型 | 预算=100×(0.5+0.7×显著性)；深度=1+显著性×3 |
+| 延伸深度衰减 | Huys et al. 2015 规划深度的信息价值理论 | 价值×γ^hop（γ=0.55）；低于噪声地板建议停止 |
+| 价值函数 | 累积前景理论（Tversky & Kahneman 1992） | v(x)=±x^0.88，损失×λ=2.25；概率权重 w(p) |
+| 目标对齐放大 | 价值导向记忆（VDR）与动机显著性 | 收益×(1+0.8×对齐度)；基线含目标落空损失 |
+| 预期后悔 | 后悔理论（Loomes & Sugden 1982；Bell 1982） | AR=0.35×max(0,V_best−V_i) |
+| 反事实基线 | 模拟启发式（Kahneman & Tversky 1982） | 不做的世界线=前景理论参考点 |
+| 满意化 | 有限理性（Simon 1955/1956，1978 诺奖演说） | 期望水平 0.6，未达标自动×0.8 下调 |
+| 证据加权 | 证据权重与似然比（I.J. Good；贝叶斯几率规则） | logit += lnLR，双向封顶 ±5.0 |
+| 证明标准 | 法律三档标准（学理量化：0.50/0.75/0.95） | 按风险等级选用；差距换算成"还需几条较强证据" |
+| 论证结构 | 图尔敏模型（Toulmin《The Uses of Argument》1958） | claim/grounds/warrant/backing/qualifier/rebuttals |
+| 质疑消解 | Dung 抽象论证框架（Dung 1995，grounded 语义） | 加权击败：质疑被强度≥自身的支持驳倒 |
+| 规划骨架 | 手段-目的分析（Newell & Simon，GPS 1961） | 差异检测+算子表+子目标递归（防环） |
+| 工具印象 | 程序性记忆的索引式提取（tulving 分布式表征的工程近似） | 只存索引；成功加置信/失败降置信，永不删除 |
+
+> 注：法律证明标准的百分比是学理/实证研究的量化共识（用于陪审员认知建模），
+> 非成文法规定，故全部做成可配置参数（环境变量 `LT_*`，见 `logic_mind/config.py`）。
+
+## 与 brain-memory-mcp 的联动
+
+- **举证即回忆**：`gather_memory_evidence` 调用记忆检索，命中的记忆自动获得
+  检索强化（测试效应）——用得多的经验越来越难忘
+- **目标对齐**：框架界定阶段读取长期目标（含优先级）计算对齐度，目标关联
+  记忆的权重加成（类内局部权重、情绪唤醒、目标全局加成）全部反映到证据强度里
+- **复盘回写**：`review_outcome` 把结果写成带情绪编码的事件记忆（失败的教训
+  arousal=0.7，忘得更慢），并与举证记忆建立联想边——下次遇到类似情境，
+  扩散激活会自动带出这次的教训
+- **软纠错联动**：被 `flag_dispute` 降权的记忆，在取证时得分自然变低——
+  存疑的经验不再有资格作为强证据
+
+## 目录结构
+
+```
+logic-thinking-mcp/
+├── server.py                 # MCP 服务（stdio，18 工具）
+├── logic_mind/
+│   ├── config.py             # LT_* 参数中心（全部可环境变量覆盖）
+│   ├── models.py             # Trace/Option/Consequence/Evidence/ToolImpression
+│   ├── sim.py                # 稀疏向量（与 brain-memory 同一算法同一向量空间）
+│   ├── store.py              # SQLite：思考轨迹 + 工具印象
+│   ├── attention.py          # 注意力容量模型
+│   ├── prospect.py           # 前景理论价值函数/概率权重/预期后悔
+│   ├── argument.py           # 对数几率账本 + 三档标准 + 图尔敏 + Dung
+│   ├── mea.py                # 手段-目的分析
+│   ├── bridge.py             # 记忆桥（直连 brain-memory 引擎）
+│   └── deliberation.py       # 八步框架引擎 + 决断闸门
+├── tests/test_reasoning.py   # 50 项断言（含用户核心示例的翻转测试）
+└── demo.py                   # 四场景演示
+```

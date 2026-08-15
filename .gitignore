@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 本地数据库（记忆/思维/内心声音——绝不入库，那是你的"大脑"）
+*.db
+*.db-wal
+*.db-shm
+.brain_memory/
+.logic_mind/
+.inner_mind/
+
+# 工具
+.pytest_cache/
+.ruff_cache/
+.DS_Store
+Thumbs.db
+
+# 交付物与临时文件
+*.zip
+.screenshots/

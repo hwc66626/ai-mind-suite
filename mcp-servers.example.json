@@ -1,0 +1,17 @@
+{
+  "_说明": "把 /path/to/ai-mind-suite 换成你解压后的实际路径；Windows 把 python3 换成 python 或 py",
+  "mcpServers": {
+    "brain-memory": {
+      "command": "python3",
+      "args": ["/path/to/ai-mind-suite/brain-memory-mcp/server.py"]
+    },
+    "logic-thinking": {
+      "command": "python3",
+      "args": ["/path/to/ai-mind-suite/logic-thinking-mcp/server.py"]
+    },
+    "inner-voice": {
+      "command": "python3",
+      "args": ["/path/to/ai-mind-suite/inner-voice-mcp/server.py"]
+    }
+  }
+}

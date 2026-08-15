@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ["3.10", "3.11", "3.12"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: 安装依赖
+        run: pip install mcp ruff
+      - name: 静态检查
+        run: ruff check brain-memory-mcp logic-thinking-mcp inner-voice-mcp
+              --select F,E7,E9,B,PLE,PLW,UP,SIM,C4,RET
+              --ignore UP015,SIM108,SIM117,RET505,PLW0603,PLW1510
+      - name: 服务器可导入（MCP 注册无异常）
+        run: |
+          python -c "import ast,sys; [ast.parse(open(f,encoding='utf-8').read()) for f in
+          ['brain-memory-mcp/server.py','logic-thinking-mcp/server.py','inner-voice-mcp/server.py']]"
+      - name: brain-memory 测试
+        run: |
+          cd brain-memory-mcp
+          python tests/test_lifecycle.py
+          python tests/test_context.py
+      - name: logic-thinking 测试
+        run: |
+          cd logic-thinking-mcp
+          python tests/test_reasoning.py
+      - name: inner-voice 单元测试
+        run: |
+          cd inner-voice-mcp
+          python tests/test_voice.py
+        env:
+          INNER_MIND_NO_DAEMON: "1"
+      - name: inner-voice 守护进程真实生命周期
+        if: runner.os != 'Windows'
+        run: |
+          cd inner-voice-mcp
+          python tests/test_daemon_live.py
+        env:
+          INNER_MIND_DAEMON_INTERVAL: "2"

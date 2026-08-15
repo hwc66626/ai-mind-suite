@@ -1,0 +1,14 @@
+{
+  "_comment": "接入示例：把 args 里的路径换成你的实际路径。env 可选，默认数据库在 ~/.brain_memory/memory.db",
+  "mcpServers": {
+    "brain-memory": {
+      "command": "python3",
+      "args": ["/absolute/path/to/brain-memory-mcp/server.py"],
+      "env": {
+        "BRAIN_MEMORY_DB": "/home/you/.brain_memory/memory.db",
+        "BM_WORKING_SET_CAPACITY": "7",
+        "BM_SPREAD_GAMMA": "0.5"
+      }
+    }
+  }
+}
