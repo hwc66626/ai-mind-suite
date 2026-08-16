@@ -82,7 +82,7 @@ MCP 客户端注册（stdio）：
 目录需与本项目同级（记忆桥按相对路径查找；也可用 `LT` 环境外的
 `sys.path` 自行注入）。
 
-## 工具清单（23 个）
+## 工具清单（27 个）
 
 | 分组 | 工具 | 作用 |
 |---|---|---|
@@ -100,11 +100,15 @@ MCP 客户端注册（stdio）：
 | 审计 | `get_trace` / `list_traces` / `attention_status` | 轨迹查看：`get_trace` 默认索引视图（阶段/账本计数/方案排名/决断，实测比全量省 90%），后果树与证据流水用 `detail="full"` 按需展开 |
 | 工具印象 | `register_tool_impression` / `recall_tools` / `update_tool_impression` | 索引式工具缓存 |
 | 规划 | `plan_mea` | 手段-目的分析：差异→算子→子目标递归 |
-| 目标锁 | `goal_begin` | 登记目标锁：把"答应"变成可机检承诺（todos/artifacts/checks 三类验收标准，至少一项，空标准拒绝登记） |
+| 目标锁 | `goal_begin` | 登记目标锁：把"答应"变成可机检承诺（todos/artifacts/checks 三类验收标准，至少一项，空标准拒绝登记）；autonomy 登记自主权范围——**登记即预授权，范围内不再逐项确认** |
 | | `goal_progress` | 逐项销账：待办完成须附证据，产物落盘自动核验，检查命令实时执行看退出码 |
 | | `goal_stop` | **停止闸门**：申请结束回合时验收——证据不齐返回 `block` 并列出缺口，全达标才 `approve`；每次申请留痕可审计 |
 | | `goal_abandon` | 显式放弃：必须给出理由，无因放弃被拒绝 |
-| | `goal_board` | 目标看板：全部目标锁状态一览（running/done/abandoned + 完成度） |
+| | `goal_board` | 目标看板：全部目标锁状态一览（running/done/abandoned + 完成度 + 开放问询/待裁决降级） |
+| 自主性闸门 | `ask_gate` | **问询闸门**：问题抛给用户前必须归类——irreversible/credential/ambiguity/external 四类才许问，其余 decision=self 退回自答；问询预算 3 条，挂起不暂停 |
+| | `answer_question` | 了结问询：拿到答复登记，不再阻塞任何待办 |
+| | `propose_deviation` | **偏移闸门**：中途换方案唯一通道——省力+降标直接 reject（偷懒路线不是选项）；标准不变放行留痕；真障碍登记待裁决，裁决前按原标准继续 |
+| | `resolve_deviation` | 裁决降级申请（用户操作）：批准/驳回，全程留痕 |
 
 ### 目标锁：专治"答应即终止"
 
@@ -123,6 +127,30 @@ goal_stop(...) → block → goal_stop(...) → approve（3/3 + 产物在 + 检�
 
 验收器只认三类硬证据：待办勾销记录、产物文件存在性、检查命令真实退出码。
 空手申请结束一律 `block`，且每次申请写入审计日志（申请内容/decision/缺口清单）。
+
+### 自主性闸门：专治"复述确认"与"偷懒降级"
+
+两类高频顽疾同根——提问和抛选择对模型零成本、零责任，还能让任务暂停省力：
+
+```
+模型: 您的目标是重构登录模块，请问要开始执行吗？
+ask_gate("是否要开始执行？") → decision=self：目标已登记 = 执行已预授权
+
+模型: 我发现更简单的方案：只交付 1 个合并文件（原定 3 个），您选哪个？
+propose_deviation(effort, keep_criteria=false) → decision=reject：
+  省力动机 + 降低验收标准 = 偷懒路线，不是选项
+
+模型: LDAP 服务不存在，建议砍掉域登录（真障碍）
+propose_deviation(impossible, keep_criteria=false) → pending_user：登记待裁决
+模型: 那我暂停等用户决定。
+goal_stop("等用户决定") → block：有降级申请待裁决，裁决前按原标准继续
+```
+
+规则：只有 irreversible（不可逆）/ credential（缺凭证）/ ambiguity（真歧义）/
+external（第三方决定）四类问题许问，其余退回自答；问询预算 3 条，挂起不暂停
+（其余待办继续）；换方案必须走 `propose_deviation`，省力+降标直接拒绝；
+真障碍降级登记后**裁决前不许停摆**——`goal_stop` 联动拦截，堵死"抛完选择
+就等用户"的路径。
 
 ## 科学依据（每条机制的出处）
 

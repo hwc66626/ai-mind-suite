@@ -39,6 +39,7 @@ jobs:
           cd logic-thinking-mcp
           python tests/test_reasoning.py
           python tests/test_goal_lock.py
+          python tests/test_autonomy_gate.py
       - name: inner-voice 单元测试
         run: |
           cd inner-voice-mcp

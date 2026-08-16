@@ -6,11 +6,12 @@
 三个独立 MCP（Model Context Protocol）服务器，共享同一份记忆库，可单独安装。
 重要性依次递减：思维与记忆是核心（怎么想、想的时候用什么），内心声音是配套
 （别在忙碌中忘了什么）——前两个独立成立，第三个依赖前两个才完整。
-三闸门（见下）横跨三个服务器，专治两类顽疾：**答应即终止**、**转头就忘**。
+四闸门（见下）横跨三个服务器，专治四类顽疾：**答应即终止**、**转头就忘**、
+**口说无凭**、**复述确认与偷懒降级**。
 
 | 服务器 | 是什么 | 工具数 |
 |---|---|---|
-| [logic-thinking-mcp](logic-thinking-mcp/) | 重建逻辑思维：S1/S2 双通道路由、注意力预算、前景理论、反事实基线、举证账本（法律三档证明标准）、图尔敏论证、八步决断闸门——**没有许可不得执行**；**目标锁：登记验收标准，`goal_stop` 证据不齐一律拦截** | 23 |
+| [logic-thinking-mcp](logic-thinking-mcp/) | 重建逻辑思维：S1/S2 双通道路由、注意力预算、前景理论、反事实基线、举证账本（法律三档证明标准）、图尔敏论证、八步决断闸门——**没有许可不得执行**；**目标锁：登记验收标准，`goal_stop` 证据不齐一律拦截**；**自主性闸门：`ask_gate` 拦复述确认，`propose_deviation` 拦偷懒降级** | 27 |
 | [brain-memory-mcp](brain-memory-mcp/) | 模拟人脑记忆：双强度遗忘曲线、类内局部权重、目标全局加权、情绪加权、工作记忆 RAM、联想扩散激活、软纠错、**按 token 预算策展上下文**；**约束钉扎（置顶注入永不衰减）+ 会话开合协议** | 26 |
 | [inner-voice-mcp](inner-voice-mcp/) | 内心声音（配套）：AI 给自己设的闸门质问、闹钟、**任务提醒（事件型闹钟：完成某事时顺带做某事）**、**承诺看门狗（空证据的"做完了"直接拒绝）**、便签、反思；独立守护进程，**会话全关闹钟仍在走** | 19 |
 
@@ -25,23 +26,28 @@
 - **读路径一律"索引-展开"二段式**——人脑记住的是"有这回事"加一条线索，细节在需要时才重构；这套机制不限于某个工具，三个服务器的读取出口统一遵循：`recall` 只给 id+内容+得分（实测比全档案省 68%），`get_trace` 只给棋局概览：阶段/账本计数/方案排名/决断（省 90%），便签/叩门/目标/统计天生就是索引形态；完整档案永远按需展开（`get_memory(id)` / `detail="full"`），不进默认上下文
 - **AI 会提醒自己**——"睡前给手机充电"式的前瞻记忆：闸门质问（before_commit 前问自己"测试全绿了吗"）+ 守护进程闹钟 + **事件型闹钟**（`set_task_reminder("给手机充电", "睡觉")` 锚在任务上，`report_task_done` 汇报完成即触发，无需常驻进程）
 
-## 三闸门：说到做到
+## 四闸门：说到做到
 
-针对 agent 的两类顽疾——**答应即终止**（"好的我马上修"然后不调任何工具就结束回合）和
-**转头就忘**（上下文清空后一切归零、反复要用户提醒）——三个服务器各出一道闸门：
+针对 agent 的四类顽疾——**答应即终止**（"好的我马上修"然后不调任何工具就结束回合）、
+**转头就忘**（上下文清空后一切归零、反复要用户提醒）、**口说无凭**（"我做完了"拿不出证据）、
+**复述确认与偷懒降级**（目标已写清还要问"是否执行"；发现让自己更轻松、让产物更糟的
+路线，抛给用户选，任务停摆）——闸门逐类拦截：
 
 | 闸门 | 服务器 | 机制 | 拦截对象 |
 |---|---|---|---|
 | 目标锁 | logic-thinking | `goal_begin` 登记待办/产物/检查命令三项验收标准；`goal_stop` 是停止闸门：证据不齐返回 `block` 并列出缺口，全部达标才 `approve`；全程留痕可审计 | 答应即终止：想收工先过验收，0/3 完成度别想结束 |
 | 记忆闸门 | brain-memory | `pin_constraint` 钉扎硬约束（置顶注入、永不衰减、90 天后仍在）；`session_start` 开局注入"本该记得的一切"；`session_close` 收尾把事实沉淀落盘 | 转头就忘：跨会话自动召回，不用用户反复提醒 |
 | 承诺看门狗 | inner-voice | `make_promise` 把口头承诺落库成账并设核查时限；`fulfill_promise` 兑现必须附证据（命令输出/产物路径/测试结果），空证据直接拒绝；守护进程到期催办 | 口说无凭："我做完了"没证据不算兑现 |
+| 自主性闸门 | logic-thinking | `goal_begin(autonomy=…)` 登记即预授权，`ask_gate` 把问题抛给用户前必须归类（irreversible/credential/ambiguity/external 四类才许问，其余 self 自答 + 问询预算 3 条）；`propose_deviation` 是换方案唯一通道：省力动机 + 降低验收标准直接 reject，真障碍登记待裁决且**裁决前不许停摆**（`goal_stop` 联动拦截） | 复述确认："是否执行"的答案已在预授权里；偷懒降级：省力+降标不是选项；抛完选择就停摆：降级未裁决不许收工 |
 
 一条贯穿的工作流：接大任务先 `goal_begin` 锁验收标准 → 干活中 `goal_progress`
 逐项销账 → 会话收尾 `session_close` 沉淀事实 + `pin_constraint` 钉住硬约束 →
-下次开局 `session_start` 全部回来 → 想提前收工 `goal_stop` 过闸，证据不齐被打回。
+下次开局 `session_start` 全部回来 → 想提前收工 `goal_stop` 过闸，证据不齐被打回；
+中途想问用户过 `ask_gate`、想换方案过 `propose_deviation`。
 
-效果可复现：`python3 demo_goal_immunity.py`（三场景对照演示：
-拦截 2 次收工申请推到 3/3 才放行 / 钉扎约束跨会话置顶召回 / 空证据兑现被拒）。
+效果可复现：`python3 demo_goal_immunity.py`（四场景对照演示：
+拦截 2 次收工申请推到 3/3 才放行 / 钉扎约束跨会话置顶召回 / 空证据兑现被拒 /
+"是否执行"被退回自答 + 省力降级被拒 + 降级未裁决收工被拦）。
 
 ## 快速开始
 
@@ -97,17 +103,17 @@ cd ../inner-voice-mcp  && INNER_MIND_NO_DAEMON=1 python3 tests/test_voice.py
 
 ```bash
 cd brain-memory-mcp   && python3 tests/test_lifecycle.py && python3 tests/test_context.py && python3 tests/test_memory_gate.py
-cd ../logic-thinking-mcp && python3 tests/test_reasoning.py && python3 tests/test_goal_lock.py
+cd ../logic-thinking-mcp && python3 tests/test_reasoning.py && python3 tests/test_goal_lock.py && python3 tests/test_autonomy_gate.py
 cd ../inner-voice-mcp  && INNER_MIND_NO_DAEMON=1 python3 tests/test_voice.py && python3 tests/test_daemon_live.py && INNER_MIND_NO_DAEMON=1 python3 tests/test_promise_watchdog.py
-cd .. && python3 demo_goal_immunity.py   # 三闸门对照演示
+cd .. && python3 demo_goal_immunity.py   # 四闸门对照演示
 ```
 
-447 项断言（含三闸门回归 72 项：目标锁 27 / 记忆闸门 20 / 承诺看门狗 25），
-三闸门防线另通过 16 个定向变异测试验证（`python3 scripts/mutation_test.py`，
+476 项断言（含四闸门回归 101 项：目标锁 27 / 记忆闸门 20 / 承诺看门狗 25 / 自主性闸门 29），
+四闸门防线另通过 20 个定向变异测试验证（`python3 scripts/mutation_test.py`，
 故意注错逐一检验测试能否抓住，当前得分 100%）。
 CI 覆盖 Ubuntu / Windows / macOS × Python 3.10–3.12。
 工具定义的 token 开销可用 `python scripts/measure_tool_tokens.py` 复测
-（当前：logic ~2400 / brain ~2160 / voice ~1190，三套合计 ~5740）。
+（当前：logic ~3010 / brain ~2160 / voice ~1190，三套合计 ~6360）。
 
 ## 许可
 
