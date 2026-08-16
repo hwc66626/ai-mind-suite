@@ -112,6 +112,14 @@ def main():
     r = pin_constraint(b, "停用腾位后重新钉扎")
     check("腾位后可再钉", "钉扎id" in r, str(r)[:80])
 
+    print("[10] 钉扎单条长度：超长拒绝（防注入块被单条撑爆）")
+    r = pin_constraint(b, "长" * 301)
+    check("301 字被拒", "错误" in r and "300" in r["错误"], str(r)[:80])
+    unpin_constraint(b, list_pinned(b)[-1]["id"])   # 腾一个位给边界用例
+    r = pin_constraint(b, "恰 300 字可钉：" + "约" * 290)   # 前缀 10 字 + 290 = 300
+    check("300 字边界通过", "钉扎id" in r, str(r)[:80])
+    unpin_constraint(b, r["钉扎id"])
+
     print(f"\n结果：{PASS} 通过 / {FAIL} 失败")
     sys.exit(1 if FAIL else 0)
 

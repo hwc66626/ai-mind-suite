@@ -129,6 +129,24 @@ def main():
           all(p["来源"] != "promise" for p in v.inbox()["未答叩门"]),
           str(v.inbox())[:100])
 
+    print("[10] 双实例竞争：CAS 落败方不得叩门（防双响）")
+    r = v.make_promise("双实例竞争下的承诺", deadline_minutes=1)
+    pid4 = r["承诺id"]
+    v.store.update_voice_fields(
+        pid4, due_at=iso(datetime.now() - timedelta(minutes=1)))
+    orig = v.store.advance_alarm_cas
+    v.store.advance_alarm_cas = lambda *a, **k: False   # 模拟另一实例刚占位
+    try:
+        tick = daemon.run_tick(datetime.now())
+    finally:
+        v.store.advance_alarm_cas = orig
+    check("CAS 落败方不计催办", tick["承诺催办"] == 0, str(tick))
+    n_ping = v.store._conn.execute(
+        "SELECT COUNT(*) AS c FROM pings WHERE voice_id=?", (pid4,)
+    ).fetchone()["c"]
+    check("CAS 落败方未写入叩门", n_ping == 0, n_ping)
+    v.fulfill_promise(pid4, "测试收尾，了结该承诺")
+
     print(f"\n结果：{PASS} 通过 / {FAIL} 失败")
     sys.exit(1 if FAIL else 0)
 
