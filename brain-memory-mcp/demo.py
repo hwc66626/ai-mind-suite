@@ -42,16 +42,16 @@ def main():
 
     show("第 2 幕：检索——一条记忆的两副面孔")
     print("  【类内检索 category=生活/购物】局部权重 1.0 的记忆占优：")
-    brief(brain.recall("买牛奶注意什么", category="生活/购物"))
+    brief(brain.recall("买牛奶注意什么", category="生活/购物", detail="full"))
     print("  【全局检索】重要性更高的记忆占优：")
-    brief(brain.recall("买牛奶注意什么"))
+    brief(brain.recall("买牛奶注意什么", detail="full"))
 
     show("第 3 幕：长期目标在所有记忆中都占有更大权重")
     brain.remember("向量检索采用余弦相似度计算文本相关性", importance=0.5,
                    goal="构建记忆系统")
     brain.remember("检索重复文档时用编辑距离衡量相似程度", importance=0.5)
     print("  两条重要性相同（0.5），一条挂了目标——全局检索：")
-    brief(brain.recall("相似度 检索"))
+    brief(brain.recall("相似度 检索", detail="full"))
 
     show("第 4 幕：情绪加权与联想扩散")
     brain.remember("项目上线前夜服务器崩了，全组通宵救火",  # 高唤醒度事件
@@ -60,16 +60,16 @@ def main():
     a2 = brain.remember("小李有乳糖不耐受，不能喝牛奶", importance=0.7)["id"]
     brain.link_memory(a1, a2, strength=0.9)
     print("  查「酸菜鱼」——联想边把「乳糖不耐受」也带了出来（睹物思人）：")
-    brief(brain.recall("酸菜鱼", limit=4))
+    brief(brain.recall("酸菜鱼", limit=4, detail="full"))
 
     show("第 5 幕：软纠错——认为是错的，也只是降权，不删除")
     hit = brain.recall("余弦相似度", limit=1)[0]
     brain.flag_dispute(hit["id"], "示例：疑似与编辑距离记忆重复，待确认")
     print(f"  标记前 score={hit['score']:.3f}，标记后：")
-    brief(brain.recall("余弦相似度", limit=1))
+    brief(brain.recall("余弦相似度", limit=1, detail="full"))
     print("  → 翻案：restore_memory 后权重恢复，历史标记留痕")
     brain.restore_memory(hit["id"])
-    brief(brain.recall("余弦相似度", limit=1))
+    brief(brain.recall("余弦相似度", limit=1, detail="full"))
 
     show("第 6 幕：睡眠固化——遗忘曲线、去重、语义压缩")
     brain.time_travel(90)  # 先快进 90 天：观察旧记忆遗忘
@@ -87,7 +87,7 @@ def main():
               f"{row['content'][:20]}")
 
     show("第 7 幕：冷归档唤醒 + 全局体检")
-    cold_hit = brain.recall("买牛奶保质期", include_cold=True, limit=3)
+    cold_hit = brain.recall("买牛奶保质期", include_cold=True, limit=3, detail="full")
     brief(cold_hit)
     st = brain.stats()
     print(f"  统计：{st['记忆总数_正常']} 条正常 | 分层 {st['分层']} | "

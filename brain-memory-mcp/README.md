@@ -50,7 +50,7 @@
 ```bash
 pip install -r requirements.txt   # 只需要官方 mcp SDK，核心引擎零依赖
 python demo.py                    # 先看 7 幕机制演示（临时库，跑完即弃）
-python tests/test_lifecycle.py    # 12 组机制断言
+python tests/test_lifecycle.py    # 13 组机制断言
 python tests/test_context.py      # 24 项上下文策展断言
 ```
 
@@ -74,7 +74,7 @@ python tests/test_context.py      # 24 项上下文策展断言
 | 工具 | 作用 |
 |---|---|
 | `remember` | 编码入库：重要性/分类局部权重/情绪/目标/联想边，一次到位 |
-| `recall` | 检索：得分 = 相似度×有效权重×目标加成×纠错折减 (+扩散激活)，可限分类作用域、可唤醒冷归档 |
+| `recall` | 检索：得分 = 相似度×有效权重×目标加成×纠错折减 (+扩散激活)，可限分类作用域、可唤醒冷归档。**默认只返回索引行（id+内容≤80字+得分）**，完整档案按需 `get_memory`；`detail="full"` 取全分解（审计用，约为索引行的 3 倍体积） |
 | `recall_similar` | 以记忆找记忆（由此及彼） |
 | `get_memory` | 记忆完整档案：双强度快照、分类权重、目标、联想边、纠错历史、被吸收原文 |
 | `category_tree` / `add_category` | 图式树查看/维护 |
@@ -215,7 +215,8 @@ merged 归属移除）；跨进程（桥回写）以 3 秒 TTL 兜底。三个�
    检索不再返回——如果两条实际含义有细微差别，细节只存在原文里。
 4. **工作记忆容量 7 是 Cowan/Miller 的经典值，不是调优结果。** 对长上下文
    会话可能太小，`BM_WORKING_SET_CAPACITY` 可改。
-5. **21 个工具定义每轮进 prompt（实测约 1870 tok）。** 同上，短会话是纯
+5. **21 个工具定义每轮进 prompt（实测约 1780 tok，口径=描述+参数 schema，
+   复测用套件根 `scripts/measure_tool_tokens.py`）。** 同上，短会话是纯
    开销；宿主端在工具定义前插入变动内容则前缀缓存命中作废（`context_pack`
    的缓存友好排序只保证本工具输出块的字节级稳定，管不到宿主怎么拼包）。
 6. **单机单用户。** SQLite 单文件，无同步、无鉴权、无多端。

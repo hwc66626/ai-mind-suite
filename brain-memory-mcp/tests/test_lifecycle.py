@@ -67,7 +67,7 @@ def main():
     m1 = brain.remember("向量检索采用余弦相似度计算文本相关性", importance=0.5,
                         goal="构建记忆系统")
     m3 = brain.remember("检索重复文档时用编辑距离衡量相似程度", importance=0.5)
-    res = brain.recall("相似度 检索", limit=5)
+    res = brain.recall("相似度 检索", limit=5, detail="full")
     order = ids_of(res)
     assert order.index(m1["id"]) < order.index(m3["id"]), res
     m1row = next(x for x in res if x["id"] == m1["id"])
@@ -76,15 +76,15 @@ def main():
 
     # ---------- 4. 软纠错：降权不删除，可翻案 ----------
     phase("4 软纠错：只标记降权，永不删除")
-    before = next(x for x in brain.recall("余弦相似度", limit=3) if x["id"] == m1["id"])
+    before = next(x for x in brain.recall("余弦相似度", limit=3, detail="full") if x["id"] == m1["id"])
     brain.flag_dispute(m1["id"], "测试标记：信息存疑")
-    after = next(x for x in brain.recall("余弦相似度", limit=3) if x["id"] == m1["id"])
+    after = next(x for x in brain.recall("余弦相似度", limit=3, detail="full") if x["id"] == m1["id"])
     assert after["breakdown"]["纠错折减"] == 0.4
     assert after["score"] < before["score"] * 0.6, (before, after)
     assert "disputed" in after["标记"]
     assert brain.store.get_memory(m1["id"]).status == "normal"  # 本体还在
     brain.restore_memory(m1["id"])
-    final = next(x for x in brain.recall("余弦相似度", limit=3) if x["id"] == m1["id"])
+    final = next(x for x in brain.recall("余弦相似度", limit=3, detail="full") if x["id"] == m1["id"])
     assert final["breakdown"]["纠错折减"] == 1.0
     hist = brain.get_memory(m1["id"])["纠错历史"]
     assert len(hist) == 1 and "已翻案" in hist[0]["状态"]  # 痕迹保留
@@ -95,7 +95,7 @@ def main():
     a1 = brain.remember("外婆的拿手菜是酸菜鱼，过年必做", importance=0.8)
     a2 = brain.remember("小李有乳糖不耐受，不能喝牛奶", importance=0.7)
     brain.link_memory(a1["id"], a2["id"], strength=0.9)
-    res = brain.recall("酸菜鱼", limit=6)
+    res = brain.recall("酸菜鱼", limit=6, detail="full")
     order = ids_of(res)
     assert a1["id"] in order
     a2row = next((x for x in res if x["id"] == a2["id"]), None)
@@ -138,8 +138,9 @@ def main():
     stats = consolidate(brain)
     assert stats["冷归档"] > 0, stats
     default = brain.recall("买牛奶注意什么", limit=10)
-    assert all(x["层级"] != "cold" for x in default if "层级" in x)
-    with_cold = brain.recall("买牛奶注意什么", limit=10, include_cold=True)
+    assert all("cold" not in (x.get("标记") or []) for x in default), default
+    with_cold = brain.recall("买牛奶注意什么", limit=10, include_cold=True,
+                             detail="full")
     colds = [x for x in with_cold if x.get("层级") == "cold"]
     assert colds, "冷归档记忆应可被显式唤醒"
     prev = brain.forgetting_preview(limit=5)
@@ -201,7 +202,17 @@ def main():
     assert r2["id"] not in normals, "merged 记忆应从 normal 缓存移除"
     print("  插入可见 / 副本更新同步 / merged 归属移除 ✓")
 
-    print("\n全部 12 组断言通过 ✅")
+    # ---------- 检索索引模式（默认输出即索引行） ----------
+    phase("13 检索索引模式：默认瘦身，档案按需展开")
+    rows = bc.recall("支付网关", limit=3)
+    assert rows and all("breakdown" not in x and "强度" not in x for x in rows), rows
+    assert all(len(x["content"]) <= 80 for x in rows), rows
+    assert rows[0]["score"] > 0
+    full = bc.recall("支付网关", limit=3, detail="full")
+    assert full and all("breakdown" in x for x in full), full
+    print(f"  默认行字段 {sorted(rows[0].keys())}；detail=full 才带得分分解与双强度 ✓")
+
+    print("\n全部 13 组断言通过 ✅")
 
 
 if __name__ == "__main__":

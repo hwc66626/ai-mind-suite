@@ -124,6 +124,10 @@ def _build_pack_impl(brain, task: str, budget: int = 800, mode: str = "coding",
     cfg = _MODES[mode]
     budget = max(120, min(int(budget), 6000))
     now = brain.now()
+    # 与 working_set() 同口径：先让 TTL 已过的驻留项离场，再决定谁进
+    # "正在处理"块——否则过期条目会一直占着注入位（过期清理只在别人
+    # 调用时才发生，打包方不能假设有人先调过）
+    brain._expire_working_set(now)
     tv = embed(task)
     tech_task = any(h in task.lower() for h in _TECH_HINTS)
 

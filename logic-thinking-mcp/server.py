@@ -44,15 +44,9 @@ mcp = _Server("logic-thinking")
 @mcp.tool()
 def quick_think(question: str, draft_answer: str, my_confidence: float = 0.7,
                 risk_hint: str = "low") -> dict:
-    """S1 快思考闸门：判断一个直觉答案是否可信，不可信则升级 S2 深思。
-
-    参数：
-    - question: 面对的问题
-    - draft_answer: 你的直觉答案（快思考产物）
-    - my_confidence: 你对这个直觉的置信度 0~1
-    - risk_hint: 风险等级 low | medium | high
-    触发升级（双过程理论）：置信度 < 0.7、命中高风险/不可逆关键词、风险非 low。
-    """
+    """S1 快思考闸门：直觉答案可信则放行，否则升级 S2 完整框架。
+    触发升级：my_confidence<0.7、命中高风险/不可逆关键词、risk_hint 非 low。
+    my_confidence 0~1；risk_hint low|medium|high。"""
     return engine.quick_think(question, draft_answer, my_confidence, risk_hint)
 
 
@@ -62,60 +56,43 @@ def quick_think(question: str, draft_answer: str, my_confidence: float = 0.7,
 def frame_problem(situation: str, goal: str, constraints: str = "",
                   risk_level: str = "medium", arousal: float = 0.3,
                   goal_alignment: float | None = None) -> dict:
-    """第 1 步·界定：建立思考棋盘。评估风险、目标对齐（匹配长期目标）、
-    分配注意力预算与延伸深度上限，并确定该风险等级所需的证明标准。
-
-    参数：
-    - situation: 当前情境描述
-    - goal: 这次思考要达成的目标
-    - constraints: 约束条件（法律/成本/期限等，决断时会作为附加条件提醒）
-    - risk_level: low（可逆）| medium | high（不可逆/重大损失）
-    - arousal: 情境唤醒度 0~1（影响注意力容量，中等最佳）
-    - goal_alignment: 手动指定目标对齐度；不传则自动匹配 brain-memory 的长期目标
-    """
+    """第 1 步·界定：建思考棋盘。评估风险与目标对齐（不传 goal_alignment
+    则自动匹配 brain-memory 长期目标），分配注意力预算与延伸深度上限，
+    确定该风险等级所需证明标准。risk_level low|medium|high（不可逆/重大
+    损失选 high）；arousal 0~1（中等最佳）；constraints 决断时作附加条件提醒。"""
     return engine.frame(situation, goal, constraints, risk_level, arousal,
                         goal_alignment)
 
 
 @mcp.tool()
 def propose_options(trace_id: str, options: list[dict]) -> dict:
-    """第 2 步·生策：提出备选行动方案。每个方案：
-    {"name": "...", "description": "...", "benefit": 0~1（收益）,
-     "cost": 0~1（代价）, "success_prob": 0~1, "irreversibility": 0~1,
-     "goal_alignment": 0~1（可选，默认用全局值）}
-    反事实基线"不作为"由框架保留，稍后用 what_if_no_action 填充。
-    """
+    """第 2 步·生策：提出备选方案。每项 {"name","description",
+    "benefit" 0~1,"cost" 0~1,"success_prob" 0~1,"irreversibility" 0~1,
+    "goal_alignment" 0~1 可选}。"不作为"基线由框架保留，稍后填充。"""
     return engine.propose_options(trace_id, options)
 
 
 @mcp.tool()
 def what_if_no_action(trace_id: str, consequences: list[dict]) -> dict:
-    """第 2.5 步·反事实基线（必须）："如果不去执行会导致什么结果？"
-    consequences: [{"description": "...", "probability": 0~1,
-                     "impact": -1~1（对目标的价值影响，负=损失）}]
-    这是权衡的前置条件——没有"不做的世界线"作参照点，评估不被接受。
-    """
+    """第 2.5 步·反事实基线（必做）："不执行会导致什么？"consequences:
+    [{"description","probability" 0~1,"impact" -1~1 负=损失}]。
+    缺此基线 evaluate_options 会被拒绝。"""
     return engine.what_if_no_action(trace_id, consequences)
 
 
 @mcp.tool()
 def extend_consequences(trace_id: str, option: str, consequences: list[dict],
                         hop: int | None = None, parent_id: str | None = None) -> dict:
-    """第 3 步·延伸推演：像人一样"往深处推"。逐层推演某方案的后果树：
-    consequences: [{"description": "...", "probability": 0~1, "impact": -1~1}]
-    - hop: 推理深度（1=直接后果）；传 parent_id 则自动 = 父后果深度+1
-    - 深度受注意力显著性限制（重要问题能推得更远，γ^hop 深度贴现）
-    - 分支价值低于噪声地板时框架会建议停止（深想无益）
-    """
+    """第 3 步·延伸推演：逐层推演某方案后果树。consequences 格式同上；
+    hop=推理深度（1=直接后果），传 parent_id 自动=父深度+1。深度受注意力
+    显著性限制，γ^hop 贴现；低于噪声地板的分支框架建议停止。"""
     return engine.extend(trace_id, option, consequences, hop, parent_id)
 
 
 @mcp.tool()
 def evaluate_options(trace_id: str) -> dict:
-    """第 4 步·权衡：前景理论估值（损失厌恶 λ=2.25、目标对齐放大收益、
-    概率权重、深度贴现）+ 预期后悔排名 + 满意化判断（是否"足够好"可早停）。
-    与"不作为基线"的对比在这一步揭晓：做的价值是否真的高于不做。
-    """
+    """第 4 步·权衡：前景理论估值（损失厌恶、目标对齐放大收益、概率权重、
+    深度贴现）+ 预期后悔排名 + 满意化早停。与不作为基线的对比在此揭晓。"""
     return engine.evaluate(trace_id)
 
 
@@ -125,16 +102,9 @@ def evaluate_options(trace_id: str) -> dict:
 def gather_memory_evidence(trace_id: str, query: str, polarity: str = "支持",
                            route: str = "", limit: int = 4,
                            category: str | None = None) -> dict:
-    """第 5 步·记忆取证（举证的核心）：从 brain-memory 检索相关记忆，
-    记忆的综合权重越高，举证越有力（权重 -> 似然比，对数几率累加）。
-
-    参数：
-    - query: 取证线索（描述你想证明什么经验依据）
-    - polarity: 支持 | 攻击（该批证据的方向）
-    - route: 举证针对的方案名（空=通用证据）
-    - category: 可选，限定记忆分类作用域（类内局部权重生效）
-    命中的记忆会自动获得检索强化——举证即回忆，回忆即强化。
-    """
+    """第 5 步·记忆取证：从 brain-memory 检索相关记忆入账本，综合权重越高
+    举证越有力（权重→似然比）。query=取证线索；polarity 支持|攻击；
+    route=针对的方案名（空=通用）；category 限定记忆分类。命中自动强化。"""
     return engine.gather_memory_evidence(trace_id, query, polarity, route,
                                          limit, category)
 
@@ -143,15 +113,9 @@ def gather_memory_evidence(trace_id: str, query: str, polarity: str = "支持",
 def add_evidence(trace_id: str, statement: str, polarity: str = "支持",
                  strength: str = "中等", lr: float | None = None,
                  route: str = "", note: str = "") -> dict:
-    """第 5 步·手动举证：提交一条外部证据/论据入账本。
-
-    参数：
-    - statement: 证据陈述
-    - polarity: 支持 | 攻击
-    - strength: 口头强度 微弱|中等|较强|极强（LR≈2/4/10/32）
-    - lr: 直接给似然比（>1 时优先于 strength）
-    每条证据以 lnLR 更新对数几率账本；账本双向封顶防止单边碾压。
-    """
+    """第 5 步·手动举证：提交外部证据入账本。polarity 支持|攻击；
+    strength 微弱|中等|较强|极强（LR≈2/4/10/32），或 lr 直接给似然比。
+    lnLR 累加，双向封顶。"""
     return engine.add_evidence(trace_id, statement, polarity, lr, strength,
                                route, note)
 
@@ -159,38 +123,25 @@ def add_evidence(trace_id: str, statement: str, polarity: str = "支持",
 @mcp.tool()
 def prove_route(trace_id: str, route: str, warrant: str,
                 backing: str = "", rebuttals: list[str] | None = None) -> dict:
-    """第 5 步后半·举证论证：对某条路线发起"确实可行"的证明。
-
-    - route: 待证方案名
-    - warrant: 担保（为什么这些证据能推出路线可行——推理规则）
-    - backing: 支撑（担保的领域依据）
-    - rebuttals: 额外反驳条件（主张失效的情形）
-    判定双闸门：举证账本后验 ≥ 风险对应标准（0.50/0.75/0.95），
-    且 Dung 论证框架中所有质疑被驳倒（无 undec）。两关全过才算可行。
-    """
+    """第 5 步后半·举证论证：对某路线发起"确实可行"证明。warrant=担保
+    （为何这些证据能推出可行）；backing=支撑；rebuttals=额外失效条件。
+    双闸门：账本后验≥风险对应标准（0.50/0.75/0.95）且 Dung 框架质疑全驳倒。"""
     return engine.prove(trace_id, route, warrant, backing, rebuttals)
 
 
 @mcp.tool()
 def decide(trace_id: str) -> dict:
-    """第 6 步·决断闸门：框架颁不颁发执行许可（象棋裁判）。
-    三关全过才许可执行：
-    1) 效用：路线总分 > 不作为基线（做的世界线更值得）
-    2) 证明：后验 ≥ 风险等级所需标准
-    3) 论证：Dung 框架中质疑全部被驳倒
-    未过闸的执行不被信任——这是"必须通过框架得到的结果才执行"的落点。
-    """
+    """第 6 步·决断闸门：三关全过才颁发执行许可——1) 效用>不作为基线；
+    2) 后验≥证明标准；3) 论证质疑全驳倒。未过闸的路线不应执行。"""
     return engine.decide(trace_id)
 
 
 @mcp.tool()
 def review_outcome(trace_id: str, outcome: str, lessons: str = "",
                    tool_names: list[str] | None = None) -> dict:
-    """第 7 步·复盘：执行结果回写。经验写入 brain-memory 长期记忆
-    （失败的教训带情绪编码，忘得更慢）、与举证记忆建立联想边、
-    更新用过的工具印象。至此一次思考闭环。
-    outcome: success | failure | aborted
-    """
+    """第 7 步·复盘：结果回写。经验写入 brain-memory（失败教训带情绪编码
+    忘得更慢）、与举证记忆建联想边、更新工具印象。
+    outcome: success|failure|aborted。"""
     return engine.review(trace_id, outcome, lessons, tool_names)
 
 
@@ -198,20 +149,20 @@ def review_outcome(trace_id: str, outcome: str, lessons: str = "",
 
 @mcp.tool()
 def get_trace(trace_id: str) -> dict:
-    """查看一盘"棋"的完整记录：阶段、注意力面板、方案与后果树、
-    排序、证据账本、图尔敏论证、Dung 判定、决断与审计快照。"""
+    """查看一盘棋的完整记录：阶段、注意力、方案与后果树、排序、
+    证据账本、论证、决断与审计快照。"""
     return engine.get_trace(trace_id)
 
 
 @mcp.tool()
 def list_traces(limit: int = 20) -> list[dict]:
-    """最近的思考轨迹列表（棋局存档）。"""
+    """最近的思考轨迹列表。"""
     return engine.list_traces(limit)
 
 
 @mcp.tool()
 def attention_status(trace_id: str) -> dict:
-    """注意力面板：剩余预算、显著性、当前允许的延伸深度、期望水平。"""
+    """注意力面板：剩余预算、显著性、允许延伸深度、期望水平。"""
     return engine.attention_status(trace_id)
 
 
@@ -221,31 +172,23 @@ def attention_status(trace_id: str) -> dict:
 def register_tool_impression(name: str, capability: str, reduces: str,
                              prerequisites: list[str] | None = None,
                              confidence: float = 0.6) -> dict:
-    """登记工具印象：缓存里只存"我有处理某类差异的工具"的索引，
-    不存工具链本体与调用细节。
-
-    参数：
-    - name: 工具/技能名
-    - capability: 能力描述
-    - reduces: 它能消减什么差异（MEA 差异-算子表的一行）
-    - prerequisites: 前置条件特征（不满足时 MEA 会递归设子目标）
-    - confidence: 初始印象置信度
-    """
+    """登记工具印象：只存索引（能消减什么差异），不存调用细节。
+    reduces=能消减的差异（MEA 算子表一行）；prerequisites=前置特征；
+    confidence 0~1。"""
     return engine.register_tool_impression(name, capability, reduces,
                                            prerequisites, confidence)
 
 
 @mcp.tool()
 def recall_tools(need: str, limit: int = 5) -> dict:
-    """印象检索："我有没有处理这类问题的工具？"按语义匹配×印象置信度排序。
-    印象只是索引——命中后请主动查找真实工具调用，勿凭印象杜撰调用方式。"""
+    """印象检索："我有没有处理这类问题的工具？"按语义匹配×置信度排序。
+    印象只是索引，命中后请查找真实工具调用，勿杜撰调用方式。"""
     return engine.recall_tools(need, limit)
 
 
 @mcp.tool()
 def update_tool_impression(name: str, success: bool, note: str = "") -> dict:
-    """工具印象回写：真实调用后报告成败。成功印象更可信，失败降置信
-    （像记忆一样越用越准，但永不删除）。"""
+    """工具印象回写：真实调用后报告成败，成功升置信、失败降置信。"""
     return engine.update_tool_impression(name, success, note)
 
 
@@ -255,14 +198,9 @@ def update_tool_impression(name: str, success: bool, note: str = "") -> dict:
 def plan_mea(current_state: list[str], goal_state: list[str],
              extra_operators: list[dict] | None = None,
              max_depth: int | None = None) -> dict:
-    """手段-目的分析（Newell & Simon）：目标特征 - 当前状态 = 差异 ->
-    查差异-算子表（工具印象）-> 前置不满足则递归设子目标。
-
-    参数：
-    - current_state / goal_state: 状态特征列表（自然语言短语）
-    - extra_operators: 临时算子 [{"name","reduces","prerequisites"}]
-    输出子目标树与建议执行顺序；无算子可消减的差异标记为能力缺口。
-    """
+    """手段-目的分析：目标特征−当前状态=差异→查差异-算子表（工具印象）→
+    前置不满足则递归设子目标。extra_operators: [{"name","reduces",
+    "prerequisites"}]。无算子可消减的差异报能力缺口。"""
     return engine.plan_mea(current_state, goal_state, extra_operators, max_depth)
 
 

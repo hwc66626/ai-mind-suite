@@ -65,7 +65,9 @@ ISO 绝对时间；`every=0` 为一次性。
    另外宿主在散文里复述待办按输出价 ¥2/M，inbox 以缓存输入价返回，差 100 倍。
 
 token 估算假设：CJK 0.7 tok/字、ASCII 4 字符/tok（DeepSeek 分词器无公开包，
-保守估算，实际偏差预计 ±20%）。缓存命中前提（前缀从第 0 token 起相同、
+保守估算，实际偏差预计 ±20%）。套件根 `scripts/measure_tool_tokens.py`
+提供统一口径复测（CJK 1 tok/字，含参数 schema），该口径下本工具 15 个
+定义为 ~926 tok。缓存命中前提（前缀从第 0 token 起相同、
 64 tok 粒度、尽力而为、闲置数小时到几天清空）见
 [DeepSeek 缓存公告](https://api-docs.deepseek.com/zh-cn/news/news0802/)；
 dsh 若在工具定义前插入每次变动的内容（时间戳等），上述"命中价"全部作废，

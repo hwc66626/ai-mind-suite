@@ -221,15 +221,21 @@ class BrainMemory:
 
     # ================= 检索（recall） =================
     def recall(self, query: str, category: str | None = None, limit: int = 5,
-               include_cold: bool = False, spread: bool = True) -> list[dict]:
+               include_cold: bool = False, spread: bool = True,
+               detail: str = "index") -> list[dict]:
+        """检索记忆。detail="index"（默认）只返回索引行（id+内容+得分），
+        详情按需 get_memory；"full" 返回旧版全档案（含得分分解与双强度）。
+        """
         self._prefetch_maps()   # 检索循环批量预取（N 条记忆 2N 次 SQL -> 2 次）
         try:
-            return self._recall_impl(query, category, limit, include_cold, spread)
+            return self._recall_impl(query, category, limit, include_cold,
+                                     spread, detail)
         finally:
             self._clear_maps()
 
     def _recall_impl(self, query: str, category: str | None = None, limit: int = 5,
-                     include_cold: bool = False, spread: bool = True) -> list[dict]:
+                     include_cold: bool = False, spread: bool = True,
+                     detail: str = "index") -> list[dict]:
         now = self.now()
         qv = embed(query)
 
@@ -300,7 +306,9 @@ class BrainMemory:
         results = sorted(merged.values(), key=lambda s: s["score"], reverse=True)[:limit]
         out = []
         for s in results:
-            presented = self._present(s)          # 先快照展示值（强化前）
+            # 索引模式先于强化快照（presented 与 full 同理，保持一致口径）
+            presented = (self._present_index(s) if detail != "full"
+                         else self._present(s))
             if (s["score"] >= C.REINFORCE_MIN_SCORE
                     or s["sim"] >= C.REINFORCE_MIN_SIM):
                 # 成功提取 -> 双强度增长（冷记忆被线索唤醒也算"想起来了"）
@@ -337,15 +345,17 @@ class BrainMemory:
             activation.pop(mid, None)
         return activation
 
-    def recall_similar(self, memory_id: str, limit: int = 5) -> list[dict]:
+    def recall_similar(self, memory_id: str, limit: int = 5,
+                       detail: str = "index") -> list[dict]:
         """以记忆找记忆：以某条记忆的内容为线索检索其近邻。"""
         self._prefetch_maps()
         try:
-            return self._recall_similar_impl(memory_id, limit)
+            return self._recall_similar_impl(memory_id, limit, detail)
         finally:
             self._clear_maps()
 
-    def _recall_similar_impl(self, memory_id: str, limit: int = 5) -> list[dict]:
+    def _recall_similar_impl(self, memory_id: str, limit: int = 5,
+                             detail: str = "index") -> list[dict]:
         m0 = self.store.get_memory(memory_id)
         if not m0:
             return [{"error": f"记忆不存在：{memory_id}"}]
@@ -364,7 +374,26 @@ class BrainMemory:
                         "disputed": wc["disputed"], "local_w": None, "spread": 0.0,
                         "via": "similar", "score": sim * wc["w"]})
         out.sort(key=lambda s: s["score"], reverse=True)
-        return [self._present(s) for s in out[:limit]]
+        present = (self._present_index if detail != "full" else self._present)
+        return [present(s) for s in out[:limit]]
+
+    def _present_index(self, s: dict) -> dict:
+        """索引行：检索结果的默认形态（记忆即索引思想的落点）。
+
+        一行 = id + 内容（≤80 字）+ 得分 + 标记。得分分解、双强度、分类、
+        目标这些档案信息按需 get_memory(id) 展开——大多数检索只是为了
+        "想起有这回事"，不为审计时没必要把全档案塞进上下文。
+        """
+        m: Memory = s["m"]
+        content = m.content if len(m.content) <= 80 else m.content[:79] + "…"
+        out = {"id": m.id, "content": content, "score": round(s["score"], 4)}
+        marks = (["disputed"] if s["disputed"] else []) \
+            + (["cold"] if m.tier == "cold" else [])
+        if marks:
+            out["标记"] = marks
+        if s["via"] != "direct":     # 扩散/近邻带出的记忆注明来路（非直连命中）
+            out["via"] = s["via"]
+        return out
 
     def _present(self, s: dict) -> dict:
         m: Memory = s["m"]

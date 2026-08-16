@@ -19,7 +19,7 @@
 - **记忆会遗忘，但不丢失**——提取强度按艾宾浩斯曲线衰减，衰减到阈值转冷归档，被线索唤醒后可恢复（Bjork 双强度理论）
 - **权重是活的**——同一记忆在全局可能不重要，在某分类内举足轻重；挂上长期目标就在一切检索中获得加成
 - **思考有闸门**——直觉答案不可信时强制升级深思；执行路线必须经八步框架举证到对应风险等级的证明标准
-- **输入什么比权重更重要**——`context_pack` 把整套记忆机制变成 token 预算分配器，缓存友好排序保证前缀缓存命中
+- **输入什么比权重更重要**——`context_pack` 把整套记忆机制变成 token 预算分配器，缓存友好排序保证前缀缓存命中；`recall` 默认只返回索引行（id+内容+得分），档案按需 `get_memory` 展开
 - **AI 会提醒自己**——"睡前给手机充电"式的前瞻记忆：闸门质问（before_commit 前问自己"测试全绿了吗"）+ 守护进程闹钟 + **事件型闹钟**（`set_task_reminder("给手机充电", "睡觉")` 锚在任务上，`report_task_done` 汇报完成即触发，无需常驻进程）
 
 ## 快速开始
@@ -80,7 +80,9 @@ cd ../logic-thinking-mcp && python3 tests/test_reasoning.py
 cd ../inner-voice-mcp  && python3 tests/test_voice.py && python3 tests/test_daemon_live.py
 ```
 
-178 项断言 + 端到端场景 17 步，CI 覆盖 Ubuntu / Windows / macOS × Python 3.10–3.12。
+179 项断言 + 端到端场景 17 步，CI 覆盖 Ubuntu / Windows / macOS × Python 3.10–3.12。
+工具定义的 token 开销可用 `python scripts/measure_tool_tokens.py` 复测
+（当前：logic ~1930 / brain ~1780 / voice ~930，三套合计 ~4630）。
 
 ## 许可
 
