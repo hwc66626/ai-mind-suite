@@ -52,9 +52,18 @@ def main() -> int:
     if args.command == "tick":
         ok, info = d.try_acquire_lock()
         if not ok:
+            # 非零退出码：tick 是调试命令，"被健康守护进程拒绝、根本
+            # 没跑"必须与"跑完一个周期"可区分，否则脚本里 `tick && 下一步'
+            # 会在什么都没发生的情况下继续往下走
             print(f"[tick] 退出：{info}", file=sys.stderr)
-            return 0
-        print(d.run_tick(datetime.now()), file=sys.stderr)
+            return 3
+        try:
+            print(d.run_tick(datetime.now()), file=sys.stderr)
+        finally:
+            # tick 是一次性调试命令：不释放锁的话，daemon_lock 里留着
+            # 已退出的 tick 进程 pid，pid 被机器上其他短命进程复用时，
+            # 真守护进程在锁时间戳仍新鲜的窗口内会被误拒启动
+            store.set_meta("daemon_lock", "")
         return 0
 
     d.run()

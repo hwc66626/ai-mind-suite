@@ -9,6 +9,7 @@ import sqlite3
 import threading
 from pathlib import Path
 
+from . import config as C
 from .models import ToolImpression, now_utc
 
 _SCHEMA = """
@@ -29,6 +30,15 @@ CREATE TABLE IF NOT EXISTS tool_impressions (
   last_used_at TEXT DEFAULT '',
   vec TEXT DEFAULT '{}'
 );
+CREATE TABLE IF NOT EXISTS goal_locks (
+  id TEXT PRIMARY KEY,
+  goal TEXT NOT NULL,
+  state TEXT DEFAULT 'running',
+  payload TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_goal_state ON goal_locks(state, updated_at);
 """
 
 
@@ -39,6 +49,11 @@ def _iso(dt) -> str:
 class LogicStore:
     def __init__(self, db_path: str | Path):
         self.db_path = str(db_path)
+        if not isinstance(db_path, (str, Path)):
+            raise TypeError(
+                f"db_path 必须是路径（str/Path），拿到 {type(db_path).__name__}："
+                "误把 store/引擎对象当路径传入，会在 CWD 静默创建名字是对象"
+                "repr 的垃圾库，写进去的数据全丢")
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
@@ -56,13 +71,23 @@ class LogicStore:
     # ---------------- traces ----------------
     def save_trace(self, trace_dict: dict):
         now = _iso(now_utc())
+        created = trace_dict.get("created_at") or now
         with self._lock:
+            # 同 id 重复保存是同一条轨迹的推进（created_at 不变）；
+            # created_at 不同则说明撞了另一条轨迹的 id——覆盖语义会把
+            # 旧轨迹的完整审计链（方案/证据/决断）静默顶掉，必须拒绝
+            row = self._conn.execute(
+                "SELECT created_at FROM traces WHERE id=?",
+                (trace_dict["id"],)).fetchone()
+            if row and row["created_at"] != created:
+                raise ValueError(
+                    f"trace id 冲突：{trace_dict['id']} 已属于另一条轨迹，拒绝覆盖")
             self._conn.execute(
                 "INSERT INTO traces(id,payload,created_at,updated_at) VALUES(?,?,?,?) "
                 "ON CONFLICT(id) DO UPDATE SET payload=excluded.payload, "
                 "updated_at=excluded.updated_at",
                 (trace_dict["id"], json.dumps(trace_dict, ensure_ascii=False),
-                 trace_dict.get("created_at") or now, now))
+                 created, now))
 
     def get_trace(self, trace_id: str) -> dict | None:
         with self._lock:
@@ -79,7 +104,9 @@ class LogicStore:
         for r in rows:
             d = json.loads(r["payload"])
             out.append({
-                "id": d["id"], "situation": d.get("situation", "")[:60],
+                # id 取行主键而非 payload：主键是稳定来源，外部工具改坏
+                # payload 时也不至于 KeyError / 主键错位
+                "id": r["id"], "situation": d.get("situation", "")[:60],
                 "goal": d.get("goal", "")[:40], "stage": d.get("stage"),
                 "risk": d.get("risk_level"), "decision": (d.get("decision") or {}).get("decision_type"),
                 "updated_at": r["updated_at"],
@@ -89,12 +116,18 @@ class LogicStore:
     # ---------------- tool impressions ----------------
     @staticmethod
     def _row_to_impression(row) -> ToolImpression:
+        # 防御式取列：该表是列式存储且无迁移机制，旧库列集不一致时
+        # sqlite3.Row 缺键抛 IndexError——缺列给默认值把硬故障降为兼容
+        cols = set(row.keys())
         return ToolImpression(
             name=row["name"], capability=row["capability"], reduces=row["reduces"],
-            prerequisites=json.loads(row["prerequisites"] or "[]"),
-            confidence=row["confidence"], success_count=row["success_count"],
-            fail_count=row["fail_count"], last_used_at=row["last_used_at"] or "",
-            vec={int(k): v for k, v in json.loads(row["vec"] or "{}").items()},
+            prerequisites=json.loads(row["prerequisites"] if "prerequisites" in cols else "[]"),
+            confidence=row["confidence"] if "confidence" in cols else 0.6,
+            success_count=row["success_count"] if "success_count" in cols else 0,
+            fail_count=row["fail_count"] if "fail_count" in cols else 0,
+            last_used_at=(row["last_used_at"] or "") if "last_used_at" in cols else "",
+            vec={int(k): v for k, v in json.loads(
+                row["vec"] if "vec" in cols else "{}").items()},
         )
 
     def upsert_impression(self, imp: ToolImpression):
@@ -125,17 +158,56 @@ class LogicStore:
         return [self._row_to_impression(r) for r in rows]
 
     def record_impression_use(self, name: str, success: bool):
+        """使用反馈：成功加置信、失败打折，并更新时间戳。
+
+        学习参数走 config（可被 LT_TOOL_* 环境变量覆盖）；两条信息
+        并进同一条 UPDATE——autocommit 下拆两条语句，第二条失败会
+        留下"计数已加、时间戳未更新"的半提交状态。
+        """
+        now = _iso(now_utc())
         with self._lock:
             if success:
                 self._conn.execute(
                     "UPDATE tool_impressions SET success_count=success_count+1, "
-                    "confidence=MIN(1.0, confidence + ?) WHERE name=?",
-                    (0.25, name))
+                    "confidence=MIN(1.0, confidence + ?), last_used_at=? WHERE name=?",
+                    (C.TOOL_CONF_LEARN, now, name))
             else:
                 self._conn.execute(
                     "UPDATE tool_impressions SET fail_count=fail_count+1, "
-                    "confidence=MAX(?, confidence * ?) WHERE name=?",
-                    (0.05, 0.70, name))
+                    "confidence=MAX(?, confidence * ?), last_used_at=? WHERE name=?",
+                    (C.TOOL_MIN_CONF, C.TOOL_CONF_PENALTY, now, name))
+
+    # ---------------- goal locks（目标锁与停止闸门） ----------------
+
+    def save_goal_lock(self, lock: dict):
+        """目标锁整包落库（状态机推进即整体覆盖，无部分更新歧义）。"""
+        now = _iso(now_utc())
+        with self._lock:
             self._conn.execute(
-                "UPDATE tool_impressions SET last_used_at=? WHERE name=?",
-                (_iso(now_utc()), name))
+                "INSERT INTO goal_locks(id,goal,state,payload,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?) "
+                "ON CONFLICT(id) DO UPDATE SET goal=excluded.goal, "
+                "state=excluded.state, payload=excluded.payload, "
+                "updated_at=excluded.updated_at",
+                (lock["id"], lock["goal"], lock["state"],
+                 json.dumps(lock, ensure_ascii=False),
+                 lock.get("created_at") or now, now))
+
+    def get_goal_lock(self, lock_id: str) -> dict | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT payload FROM goal_locks WHERE id=?", (lock_id,)).fetchone()
+        return json.loads(row["payload"]) if row else None
+
+    def list_goal_locks(self, state: str | None = None,
+                        limit: int = 50) -> list[dict]:
+        q = "SELECT payload FROM goal_locks"
+        args: tuple = ()
+        if state:
+            q += " WHERE state=?"
+            args = (state,)
+        q += " ORDER BY updated_at DESC LIMIT ?"
+        args = args + (int(limit),)
+        with self._lock:
+            rows = self._conn.execute(q, args).fetchall()
+        return [json.loads(r["payload"]) for r in rows]

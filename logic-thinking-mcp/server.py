@@ -204,5 +204,50 @@ def plan_mea(current_state: list[str], goal_state: list[str],
     return engine.plan_mea(current_state, goal_state, extra_operators, max_depth)
 
 
+# ===================== 目标锁与停止闸门（防"答应即终止"） =====================
+
+@mcp.tool()
+def goal_begin(goal: str, todos: list[str] | None = None,
+               artifacts: list[str] | None = None,
+               checks: list[str] | None = None) -> dict:
+    """登记目标锁：把"答应"变成可机检的承诺。todos=待办清单；
+    artifacts=完成时必须真实存在的文件路径；checks=必须退出码 0 的
+    命令（如 "python -m pytest tests/"，非交互、120s 超时）。
+    三者至少一项——没有验收标准的承诺拦不住提前终止。"""
+    from logic_mind.goals import GoalLock
+    return GoalLock(engine.store).begin(goal, todos, artifacts, checks)
+
+
+@mcp.tool()
+def goal_progress(goal_id: str, done_todo: str, evidence: str = "") -> dict:
+    """推进待办（done_todo 传待办原文或序号）。evidence=完成证据
+    （命令输出摘要/文件路径），进日志可审计。"""
+    from logic_mind.goals import GoalLock
+    return GoalLock(engine.store).progress(goal_id, done_todo, evidence)
+
+
+@mcp.tool()
+def goal_stop(goal_id: str, final_message: str = "") -> dict:
+    """停止闸门：想结束回合必须先过此闸。decision=block 时禁止结束，
+    按原因继续执行后重试；确实无法完成用 goal_abandon 留痕放弃。
+    宿主协议：见 block 必须回循环，不许当没看见。"""
+    from logic_mind.goals import GoalLock
+    return GoalLock(engine.store).request_stop(goal_id, final_message)
+
+
+@mcp.tool()
+def goal_abandon(goal_id: str, reason: str) -> dict:
+    """显式放弃目标锁（必须说明原因，留痕可审计）。"""
+    from logic_mind.goals import GoalLock
+    return GoalLock(engine.store).abandon(goal_id, reason)
+
+
+@mcp.tool()
+def goal_board() -> dict:
+    """目标面板：运行中目标锁、验收进度、停止申请历史。"""
+    from logic_mind.goals import GoalLock
+    return GoalLock(engine.store).board()
+
+
 if __name__ == "__main__":
     mcp.run()  # stdio transport

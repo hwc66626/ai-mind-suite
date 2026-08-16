@@ -1,0 +1,114 @@
+#!/usr/bin/env python3
+"""承诺看门狗回归测试：防"答应即终止"。
+
+验证的不变量：
+  1. 口头承诺可登记，带核查时限
+  2. 到期未兑现 → 守护进程催办（收件箱出现"未兑现承诺"）
+  3. 催办不停止：间隔 PROMISE_RENAG_MIN 持续重叩（与闹钟的一次性语义不同）
+  4. 空证据兑现被拒绝——口说无凭
+  5. 带证据兑现 → 催办链全部了结、承诺出列
+  6. 放弃必须留痕；催办的叩门以 dismissed 了结
+  7. before_finish 闸门预设检查单可一键登记
+"""
+import os
+import sys
+import tempfile
+from datetime import datetime, timedelta
+from pathlib import Path
+
+os.environ["INNER_MIND_NO_DAEMON"] = "1"          # 测试不真拉守护进程
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from inner_mind import config as C                 # noqa: E402
+from inner_mind.daemon import VoiceDaemon          # noqa: E402
+from inner_mind.engine import InnerVoice           # noqa: E402
+from inner_mind.store import iso                   # noqa: E402
+
+PASS = 0
+FAIL = 0
+
+
+def check(name: str, cond: bool, detail: str = ""):
+    global PASS, FAIL
+    if cond:
+        PASS += 1
+        print(f"  ok  {name}")
+    else:
+        FAIL += 1
+        print(f"FAIL  {name}  {detail}")
+
+
+def main():
+    tmp = tempfile.mkdtemp()
+    db = os.path.join(tmp, "voice.db")
+    v = InnerVoice(db)
+    daemon = VoiceDaemon(v.store)
+
+    print("[1] 承诺登记")
+    r = v.make_promise("修复 auth 模块的空指针", deadline_minutes=30)
+    pid = r["承诺id"]
+    check("返回承诺id与核查时限", pid > 0 and r["核查时限"] == "30分钟")
+    check("空承诺被拒", "错误" in v.make_promise(""))
+
+    print("[2] 到期催办：不兑现就叩门")
+    v.store.update_voice_fields(pid, due_at=iso(datetime.now() - timedelta(minutes=1)))
+    tick = daemon.run_tick(datetime.now())
+    check("tick 计入承诺催办", tick["承诺催办"] == 1, str(tick))
+    box = v.inbox()
+    check("收件箱出现未兑现承诺",
+          any(p["来源"] == "promise" for p in box["未答叩门"]), str(box)[:120])
+
+    print("[3] 催办不停止：到期再次重叩（与闹钟语义的关键差异）")
+    v.store.update_voice_fields(pid, due_at=iso(datetime.now() - timedelta(seconds=1)))
+    tick = daemon.run_tick(datetime.now())
+    check("第二次到期再次催办", tick["承诺催办"] == 1, str(tick))
+    check("重叩间隔为 PROMISE_RENAG_MIN",
+          v.store.get_voice(pid).due_at > iso(datetime.now()))
+
+    print("[4] 空证据兑现被拒绝")
+    r = v.fulfill_promise(pid, "   ")
+    check("空白证据拒绝", "证据" in r.get("错误", ""), str(r)[:100])
+
+    print("[5] 带证据兑现：催办链了结")
+    r = v.fulfill_promise(pid, "pytest tests/test_auth.py 12 passed in 3.2s")
+    check("状态=已兑现", r.get("状态") == "已兑现")
+    check("两条催办叩门全部了结", r.get("了结催办") == 2, str(r))
+    check("承诺出列", v.list_promises() == [])
+    check("收件箱清空", v.inbox()["未答叩门"] == [])
+
+    print("[6] 放弃留痕")
+    r = v.make_promise("重构配置模块", deadline_minutes=60)
+    pid2 = r["承诺id"]
+    v.store.update_voice_fields(pid2, due_at=iso(datetime.now() - timedelta(minutes=1)))
+    daemon.run_tick(datetime.now())
+    check("无因放弃被拒", "错误" in v.release_promise(pid2, ""))
+    r = v.release_promise(pid2, "上游 API 变更，等文档更新后重开")
+    check("有因放弃成功且催办了结",
+          r.get("状态") == "已放弃" and r.get("了结催办") == 1, str(r))
+
+    print("[7] before_finish 闸门预设")
+    check("GATES 含 before_finish", "before_finish" in C.GATES)
+    r = v.preset_checklist("before_finish")
+    check("一键登记三问", r.get("新增") == 3, str(r)[:100])
+    g = v.check_gate("before_finish", context="")
+    check("过闸能拿到承诺兑现质问",
+          any("答应过" in q["内容"] for q in g["此刻该问"]), str(g)[:120])
+
+    print("[8] 闹钟语义未被破坏（一次性闹钟响后停用）")
+    v.set_alarm("睡觉", when="+1m")
+    alarms = list(v.store.list_voices(active_only=True, kind="alarm"))
+    check("普通闹钟仍正常登记", len(alarms) >= 1)
+    for a in alarms:
+        v.store.update_voice_fields(a.id, due_at=iso(datetime.now() - timedelta(minutes=1)))
+    tick = daemon.run_tick(datetime.now())
+    check("闹钟触发计数独立", tick["闹钟触发"] >= 1 and tick["承诺催办"] == 0,
+          str(tick))
+    check("一次性闹钟响后停用",
+          v.store.list_voices(active_only=True, kind="alarm") == [])
+
+    print(f"\n结果：{PASS} 通过 / {FAIL} 失败")
+    sys.exit(1 if FAIL else 0)
+
+
+if __name__ == "__main__":
+    main()

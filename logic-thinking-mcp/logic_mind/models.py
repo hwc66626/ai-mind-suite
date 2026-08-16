@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import hashlib
+import secrets
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -29,10 +30,11 @@ def now_utc() -> datetime:
 
 
 def gen_id(prefix: str, content: str = "") -> str:
-    # 12 位 hex = 48 bit：32bit（8位）时 ~7.7 万条轨迹就有过半碰撞概率，
-    # id 是主键，撞了 INSERT 直接 IntegrityError——长期库迟早炸
-    raw = f"{content}|{now_utc().timestamp()}|{id(object())}"
-    return prefix + "_" + hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
+    # 16 位 hex = 64 bit 熵：48bit 时约 7.7 万条轨迹就有过半碰撞概率。
+    # 熵源用 secrets（id(object()) 的地址复用率高，同微秒同内容易撞）；
+    # id 是主键，save_trace 对碰撞是覆盖语义，撞了会静默顶掉旧轨迹
+    raw = f"{content}|{now_utc().timestamp()}|{secrets.token_hex(8)}"
+    return prefix + "_" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 
 def clamp(x: float, lo: float, hi: float) -> float:

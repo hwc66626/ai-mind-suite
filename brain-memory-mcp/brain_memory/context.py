@@ -23,6 +23,7 @@ import os
 import re
 import sqlite3
 from datetime import datetime
+from pathlib import Path
 
 from . import config as C
 from .embeddings import _tokens, cosine, embed, first_sentence
@@ -85,6 +86,29 @@ def _pack_header_cost() -> int:
     return 18   # 分区标题等固定开销的保守估计
 
 
+def _scoped_cat_ids(brain, focus_category: str | None) -> set[int] | None:
+    """聚焦分类 -> 该子树的 id 集合（找不到分类返回 None=全局口径）。"""
+    if not focus_category:
+        return None
+    cat = brain.store.find_category(focus_category)
+    return brain.store.subtree_ids(cat.id) if cat else None
+
+
+def _scoped_importance(brain, m, cat_ids: set[int] | None) -> float | None:
+    """与 recall 同口径的有效重要性：类内融合局部权重、类外折减。
+
+    打包（build_pack）与换血对比（_evict_hints / pack_status）必须走
+    同一公式——否则聚焦打包存的 w 与全局口径重算的 w 不可比，零衰减
+    也会被误报"衰减至 30% 以下"，或反向漏报真正的衰减。
+    """
+    if cat_ids is None:
+        return None
+    local_w = brain.store.best_local_weight(m.id, cat_ids)
+    if local_w is not None:
+        return (1 - C.SCOPE_ALPHA) * m.importance + C.SCOPE_ALPHA * local_w
+    return m.importance * C.OUTSCOPE_FACTOR
+
+
 
 
 
@@ -132,11 +156,7 @@ def _build_pack_impl(brain, task: str, budget: int = 800, mode: str = "coding",
     tech_task = any(h in task.lower() for h in _TECH_HINTS)
 
     # ---------- 分类作用域 ----------
-    cat_ids: set[int] | None = None
-    if focus_category:
-        cat = brain.store.find_category(focus_category)
-        if cat:
-            cat_ids = brain.store.subtree_ids(cat.id)
+    cat_ids: set[int] | None = _scoped_cat_ids(brain, focus_category)
 
     # ---------- 候选打分：复用检索的全部权重机制 ----------
     ws_act = {i.memory_id: i.activation for i in brain.store.ws_list()}
@@ -151,14 +171,7 @@ def _build_pack_impl(brain, task: str, budget: int = 800, mode: str = "coding",
         # 分类（图式）作用域：与 recall 一致——类内按
         # "全局重要性×(1-α)+局部权重×α" 融合，类外降权不排除
         # （修复：此前 cat_ids 计算后未使用，focus_category 实为空操作）
-        eff_importance = None
-        if cat_ids is not None:
-            local_w = brain.store.best_local_weight(m.id, cat_ids)
-            if local_w is not None:
-                eff_importance = ((1 - C.SCOPE_ALPHA) * m.importance
-                                  + C.SCOPE_ALPHA * local_w)
-            else:
-                eff_importance = m.importance * C.OUTSCOPE_FACTOR
+        eff_importance = _scoped_importance(brain, m, cat_ids)
         wc = brain._weight_components(m, r_now, eff_importance)
         score = sim * wc["w"]
         # 工作记忆驻留加成：正在 RAM 里的东西优先出现在眼前
@@ -196,6 +209,18 @@ def _build_pack_impl(brain, task: str, budget: int = 800, mode: str = "coding",
     # 块的【拼装顺序】按缓存友好原则：稳定→易变（目标→记忆→工具→工作记忆）
     blocks: list[dict] = []
     spent = _pack_header_cost()
+
+    # ---------- 钉扎约束（约束钉扎）：永远第一位 ----------
+    # 硬约束若留在对话历史里，注意力会随深度被动衰减（实测第 5 轮 73%
+    # → 第 16 轮 33%）；钉扎层每次打包注入最顶部，位置无法影响它
+    pinned_rows = brain.store.list_pinned(active_only=True)
+    if pinned_rows:
+        plines = "\n".join(f"- [{p['scope']}] {p['content']}"
+                           for p in pinned_rows)
+        ptxt = "钉扎约束（必须遵守）：\n" + plines
+        blocks.append({"块": f"钉扎约束（{len(pinned_rows)}条）",
+                       "内容": ptxt, "est": est_tokens(ptxt)})
+        spent += blocks[-1]["est"]
 
     goals = brain.store.list_goals(active_only=True)[:4]
     goal_lines = [f"- {g.name}（优先级{g.priority}/5）" for g in goals]
@@ -273,9 +298,14 @@ def _build_pack_impl(brain, task: str, budget: int = 800, mode: str = "coding",
                 r_before = brain.retrieval_strength_now(c["m"], now)
                 brain._reinforce(c["m"], now, r_before)
 
-    brain.store.set_meta("ctx_last_pack", json.dumps(
-        {"time": now.isoformat(timespec="seconds"), "mode": mode,
-         "budget": budget, "ids": selected_ids}, ensure_ascii=False))
+    if selected_ids:
+        brain.store.set_meta("ctx_last_pack", json.dumps(
+            {"time": now.isoformat(timespec="seconds"), "mode": mode,
+             "budget": budget, "focus_category": focus_category or "",
+             "ids": selected_ids}, ensure_ascii=False))
+    # 空打包（本任务没选中任何记忆）不覆盖上次名单：宿主的上下文窗口里
+    # 仍挂着上一包注入的内容，名单被空名单顶掉后，下一包的"建议移出"
+    # 永远找不到对比对象——真正该换血的内容就一直占着窗口
 
     total = sum(b["est"] for b in blocks)
     return {
@@ -300,6 +330,9 @@ def _evict_hints(brain, now: datetime, selected: dict[str, float]) -> list[dict]
     wc["w"]（内部已含 (0.2+0.8×r_now)）。此前这里算 r_now×w，既少乘了
     打包时的任务相似度、又把 r_now 重复计入——r_now 较低的记忆即使
     零衰减也会被判"衰减至 30% 以下"，整页误报换血建议。
+    作用域口径也要一致：打包时若带 focus_category，存的 w 是"类内融合/
+    类外折减"后的值，重算必须用同一公式（meta 里持久化了 focus_category），
+    否则聚焦包 vs 全局重算不可比，照样整页误报或漏报。
     旧库 meta 里存的可能是旧口径（sim×w ≤ w），对比偏向"继续保留"，
     属提示性输出，不构成数据风险。
     """
@@ -310,6 +343,7 @@ def _evict_hints(brain, now: datetime, selected: dict[str, float]) -> list[dict]
         last = json.loads(raw)
     except json.JSONDecodeError:
         return []
+    cat_ids = _scoped_cat_ids(brain, last.get("focus_category") or None)
     out = []
     for mid, old_score in (last.get("ids") or {}).items():
         if mid in selected:
@@ -318,7 +352,8 @@ def _evict_hints(brain, now: datetime, selected: dict[str, float]) -> list[dict]
         if not m or m.status != "normal":
             continue
         r_now = brain.retrieval_strength_now(m, now)
-        wc = brain._weight_components(m, r_now)
+        wc = brain._weight_components(m, r_now,
+                                      _scoped_importance(brain, m, cat_ids))
         new_score = wc["w"]
         reason = None
         if m.tier == "cold":
@@ -346,7 +381,11 @@ def _tool_hints(task: str, enabled: bool) -> list[dict]:
         return []
     conn = None
     try:
-        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=2)
+        # as_uri() 会做百分号转义并生成合法的 file:/// 形式：路径里含
+        # ? # % 或 Windows 盘符时，手工拼 f"file:{db}?mode=ro" 会被
+        # URI 语法截断/吞参，连接失败后静默降级成"无工具印象"
+        conn = sqlite3.connect(
+            Path(db).resolve().as_uri() + "?mode=ro", uri=True, timeout=2)
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             "SELECT name, capability, confidence FROM tool_impressions "
@@ -380,6 +419,7 @@ def pack_status(brain) -> dict:
     except json.JSONDecodeError:
         return {"状态": "元数据损坏，请重新 context_pack"}
     now = brain.now()
+    cat_ids = _scoped_cat_ids(brain, last.get("focus_category") or None)
     kept, faded = [], []
     for mid, score in (last.get("ids") or {}).items():
         m = brain.store.get_memory(mid)
@@ -391,8 +431,9 @@ def pack_status(brain) -> dict:
                           "原因": "已被固化合并吸收，内容并入锚点记忆"})
             continue
         r_now = brain.retrieval_strength_now(m, now)
-        wc = brain._weight_components(m, r_now)
-        cur = wc["w"]   # 与打包时同口径（旧 meta 为 sim×w，偏"保留"方向，无害）
+        wc = brain._weight_components(m, r_now,
+                                      _scoped_importance(brain, m, cat_ids))
+        cur = wc["w"]   # 与打包时同口径（含作用域；旧 meta 为 sim×w，偏"保留"方向，无害）
         (kept if cur >= score * 0.3 else faded).append(
             {"id": mid, "内容": _compact(m.content, 40),
              "注入时": score, "现在": round(cur, 3)})

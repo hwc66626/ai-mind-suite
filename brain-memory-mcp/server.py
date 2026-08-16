@@ -184,6 +184,48 @@ def context_status() -> dict:
     return pack_status(brain)
 
 
+# ===================== 记忆闸门（防"转头就忘"） =====================
+
+@mcp.tool()
+def pin_constraint(content: str, scope: str = "global", why: str = "") -> dict:
+    """钉扎硬约束：永不衰减、每次注入最顶部（对抗注意力随深度衰减）。
+    一条约束一件事；复合约束拆多条。scope 如 deploy/coding/global。"""
+    from brain_memory.protocol import pin_constraint as _pin
+    return _pin(brain, content, scope, why)
+
+
+@mcp.tool()
+def unpin_constraint(pin_id: int) -> dict:
+    """停用一条钉扎约束（历史保留）。"""
+    from brain_memory.protocol import unpin_constraint as _unpin
+    return _unpin(brain, pin_id)
+
+
+@mcp.tool()
+def list_pinned() -> list[dict]:
+    """当前生效的钉扎约束清单。"""
+    from brain_memory.protocol import list_pinned as _list
+    return _list(brain)
+
+
+@mcp.tool()
+def session_start(task: str, budget: int = 800, mode: str = "coding",
+                  focus_category: str | None = None) -> dict:
+    """会话开始协议：注入钉扎约束+记忆包（宿主协议：新会话第一个动作）。
+    参数语义同 context_pack。"""
+    from brain_memory.protocol import session_start as _start
+    return _start(brain, task, budget, mode, focus_category)
+
+
+@mcp.tool()
+def session_close(facts: list[str] | None = None,
+                  lessons: list[str] | None = None) -> dict:
+    """会话收尾协议：抽取本会话值得长期记住的事实/教训（各传原子句）。
+    两道闸门：超长拒绝（不截断）、与既有记忆高相似去重。"""
+    from brain_memory.protocol import session_close as _close
+    return _close(brain, facts, lessons)
+
+
 # ===================== 系统维护 =====================
 
 @mcp.tool()

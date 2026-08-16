@@ -69,7 +69,7 @@ python tests/test_context.py      # 24 项上下文策展断言
 
 数据库默认在 `~/.brain_memory/memory.db`，用 `BRAIN_MEMORY_DB` 环境变量改位置。兼容官方 MCP Python SDK v2（`mcp.server.MCPServer`，2026-07 起）与 v1（`FastMCP`），自动选择导入路径。
 
-## 工具总览（21 个）
+## 工具总览（26 个）
 
 | 工具 | 作用 |
 |---|---|
@@ -87,6 +87,24 @@ python tests/test_context.py      # 24 项上下文策展断言
 | `forgetting_preview` | 遗忘预览：哪些记忆濒临冷归档 |
 | `memory_stats` | 全局体检 |
 | `time_travel` | 演示/测试：时钟前移观察长期效果 |
+| `pin_constraint` / `unpin_constraint` / `list_pinned` | **约束钉扎**：硬约束置顶注入、永不衰减（90 天后仍在注入块第一位）；同文去重防膨胀 |
+| `session_start` / `session_close` | **会话开合协议**：开局强制注入"本该记得的一切"（钉扎+相关记忆+工作记忆）；收尾抽取事实落盘，超长拒绝、高相似去重 |
+
+### 记忆闸门：专治"转头就忘"
+
+上下文窗口清空是不可逆的——多数工具的现状是下一会话从零开始，
+用户只能反复提醒"我昨天说过的那个偏好"。会话开合协议把它变成闭环：
+
+```
+会话 1 收尾：session_close(facts=["数据库迁移脚本统一放 migrations 目录"])
+             pin_constraint("部署前必须全量跑测试", scope="deploy")
+   ↓ 上下文窗口清空（RAM 归零，不可逆）
+会话 2 开局：session_start("改数据库迁移脚本")
+   → 注入块：[钉扎约束（置顶）] + [相关记忆（按任务相关性召回沉淀事实）] + [工作记忆]
+```
+
+钉扎约束不受遗忘曲线与压缩影响，`time_travel` 前移 90 天后仍置顶注入
+（测试验证）；沉淀事实按任务相关性自动召回，无需用户再提醒。
 
 ## 上下文策展（消耗优化）
 

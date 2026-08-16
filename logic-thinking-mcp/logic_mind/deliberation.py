@@ -48,7 +48,11 @@ class LogicEngine:
                     risk_hint: str = "low") -> dict:
         text = f"{question} {draft_answer}".lower()
         hits = [kw for kw in C.S1_RISK_KEYWORDS if kw in text]
-        risk = risk_hint if risk_hint in ("low", "medium", "high") else "low"
+        # 归一大小写后仍非法就报错：静默降级为 low 会让高风险问题被
+        # 快思考放行，绕过 S1→S2 升级闸门（frame 对非法 risk_level 也是报错）
+        risk = str(risk_hint or "").strip().lower()
+        if risk not in ("low", "medium", "high"):
+            return {"error": f"risk_hint 必须是 low | medium | high（收到 {risk_hint!r}）"}
         triggers = []
         if my_confidence < C.S1_CONFIDENCE_GATE:
             triggers.append(f"直觉置信度 {my_confidence:.2f} < 闸门 {C.S1_CONFIDENCE_GATE}")
@@ -85,8 +89,9 @@ class LogicEngine:
         # 目标对齐：与长期记忆中的活跃目标语义匹配（价值导向）
         auto = goal_alignment is None
         if auto:
-            ga, matched = (0.25, []) if not self.bridge.available else \
+            ga, matched = (0.35, []) if not self.bridge.available else \
                 self.bridge.goal_alignment(f"{situation} {goal}", own_goal=goal)
+            # 桥不可用时的默认 0.35 与 Trace/Option 层默认一致（README 客观限制第 4 条）
         else:
             ga, matched = clamp(goal_alignment, 0.0, 1.0), []
         goal_priority = max([m["优先级"] for m in matched], default=3) / 5.0
@@ -182,9 +187,13 @@ class LogicEngine:
         if not consequences:
             return {"error": "必须给出不作为的后果（至少 1 条），这是权衡的前置条件"}
         base = t.options[BASELINE]
+        # 预算先扣、后果后入账：顺序反了的话预算耗尽时返回 error，
+        # 但后果已 extend 进方案、baseline_filled 已置位——半提交状态
+        ok, msg = ATT.spend(t.attention, C.COST_OPTION, "反事实推演")
+        if not ok:
+            return {"error": msg}
         # 追加而非覆盖：允许多轮补充"不做会怎样"（此前版本会清掉已填后果）
         base.consequences.extend(self._mk_consequences(consequences, 1, []))
-        ok, msg = ATT.spend(t.attention, C.COST_OPTION, "反事实推演")
         t.baseline_filled = True
         if t.stage == "framed":
             t.stage = "options"
@@ -263,7 +272,10 @@ class LogicEngine:
                 continue
             p = clamp(float(it.get("probability", 0.5)), 0.01, 0.99)
             x = clamp(float(it.get("impact", 0.0)), -1.0, 1.0)
-            h = int(it.get("hop", hop))
+            # 条目级 hop 一律忽略，只用调用方校验过的 hop：extend 已按注意力
+            # 深度校验 [1, max_depth]，条目自带 hop=0/-2/9 可绕过 γ 贴现与
+            # 深度上限，直接操纵 evaluate/decide 的效用对比
+            h = hop
             c = Consequence(
                 id=gen_id("c", desc), description=desc, probability=p, impact=x, hop=h,
                 parent_id=it.get("parent_id"),
@@ -280,6 +292,11 @@ class LogicEngine:
         t = self._load(trace_id)
         if isinstance(t, dict):
             return t
+        if t.stage in ("decided", "reviewed"):
+            # 决断/复盘后棋盘封存：重新权衡会把阶段重置回 evaluated，
+            # 从而绕开 add_evidence 的账本封存守卫（决断可被反复推翻）
+            return {"error": f"已到阶段 {STAGE_CN[t.stage]}，不能重新权衡；"
+                             "如需翻案请新开 trace"}
         actions = [o for n, o in t.options.items() if not o.is_baseline]
         if not actions:
             return {"error": "没有行动方案可评估：先 propose_options"}
@@ -292,7 +309,10 @@ class LogicEngine:
             if b["方案"] in t.options:
                 t.options[b["方案"]].value_breakdown = b
 
-        best = ranked[0]
+        # 最优行动在行动方案里挑（排除基线）：全场第一若是"不作为基线"，
+        # "最优行动"装着基线、"下一步"还引导去 prove_route——但 prove/decide
+        # 都拒绝基线，宿主按提示走必然报错
+        best = next((b for b in ranked if b["方案"] != BASELINE), None)
         satisficed = best["总分"] >= t.aspiration
         if not satisficed:
             t.aspiration = round(t.aspiration * C.ASPIRATION_DECAY, 3)
@@ -300,12 +320,13 @@ class LogicEngine:
         t.log("evaluate", f"最优={best['方案']}({best['总分']}) 满意化={satisficed}")
         self._save(t)
         base_bd = next(b for b in ranked if b["方案"] == BASELINE)
+        outperform = best["总分"] > base_bd["总分"]
         return {
             "trace_id": t.id, "阶段": STAGE_CN[t.stage],
             "排序": ranked,
             "反事实对比": {"不做的总分": base_bd["总分"],
                           "最优行动": best["方案"], "最优行动总分": best["总分"],
-                          "做的价值更高": best["总分"] > base_bd["总分"]},
+                          "做的价值更高": outperform},
             "满意化": {"达标": satisficed,
                        "当前期望水平": t.aspiration,
                        "说明": ("已找到足够好的方案，可停止生策进入举证（Simon 满意化）"
@@ -313,8 +334,11 @@ class LogicEngine:
                                 "最优方案未达期望水平：期望水平已自动下调，"
                                 "建议继续生策或延伸推演后重新评估")},
             "注意力": t.attention.to_dict(),
-            "下一步": "对最优路线举证：gather_memory_evidence（从记忆取证）与 "
-                      "add_evidence（手动举证）交替使用，然后 prove_route",
+            "下一步": ("对最优路线举证：gather_memory_evidence（从记忆取证）与 "
+                      "add_evidence（手动举证）交替使用，然后 prove_route"
+                      if outperform else
+                      "所有行动方案都不优于'不作为'：接受不作为（本 trace 不再推进），"
+                      "或重新生策/延伸推演后再次 evaluate"),
         }
 
     # ================================================================
@@ -337,12 +361,19 @@ class LogicEngine:
         if polarity not in ("支持", "攻击", "support", "attack", "+", "-"):
             return {"error": "polarity 必须是 支持 | 攻击"}
         pol = 1 if polarity in ("支持", "support", "+") else -1
-        if lr is not None and lr > 1:
-            strength_val = min(math.log(lr), math.log(100))
+        if lr is not None:
+            # lr=1 是无信息量证据（lnLR=0），lr<1 是反向证据（应走 polarity=攻击）；
+            # 静默回退"中等"会把强度凭空放大 4 倍几率，足以翻转后验结论
+            lr = float(lr)
+            if lr < 1.0:
+                return {"error": "lr 必须 ≥ 1：lr=1 无信息量（强度记 0），"
+                                 "lr<1 是反向证据，请改用 polarity='攻击'并取倒数"}
+            strength_val = 0.0 if lr == 1.0 else min(math.log(lr), math.log(100))
             verbal = f"LR={lr:g}"
         else:
-            lr_val = C.VERBAL_LR.get(strength, C.VERBAL_LR["中等"])
-            strength_val = math.log(lr_val)
+            if strength not in C.VERBAL_LR:
+                return {"error": f"strength 必须是 {' | '.join(C.VERBAL_LR)}（收到 {strength!r}）"}
+            strength_val = math.log(C.VERBAL_LR[strength])
             verbal = strength
         ev = Evidence(id=gen_id("e", statement), statement=statement, polarity=pol,
                       strength=round(strength_val, 4), source_type="manual",
@@ -368,10 +399,12 @@ class LogicEngine:
         t = self._load(trace_id)
         if isinstance(t, dict):
             return t
-        if not self.bridge.available:
-            return {"error": "记忆桥不可用（brain-memory 未连接）：请改用 add_evidence 手动举证"}
+        if t.stage == "reviewed":
+            return {"error": "复盘后轨迹封存，不能追加证据"}
         if t.stage == "decided":
             return {"error": "决断已下，证据账本封存；如需翻案请新开 trace"}
+        if not self.bridge.available:
+            return {"error": "记忆桥不可用（brain-memory 未连接）：请改用 add_evidence 手动举证"}
         ok, msg = ATT.spend(t.attention, C.COST_EVIDENCE, "记忆取证")
         if not ok:
             return {"error": msg}
@@ -496,11 +529,13 @@ class LogicEngine:
                              "必须先 prove_route 完成举证论证（不经论证的执行不被信任）"}
         route = t.toulmin.get("route") or ""
         if not route:
+            # 后备解析用最长匹配：方案名互为子串时（先注册"上线"、待证
+            # "灰度上线"），首个子串命中会错配，决断被记在错误路线上
             claim = t.toulmin.get("主张_claim", "")
-            for name in t.options:
-                if name and name in claim:
-                    route = name
-                    break
+            cands = [n for n in t.options
+                     if n and n != BASELINE and n in claim]
+            if cands:
+                route = max(cands, key=len)
         if route not in t.options or route == BASELINE:
             return {"error": "无法识别待决路线，请重新 prove_route"}
 
@@ -596,7 +631,10 @@ class LogicEngine:
         tool_report = []
         for name in tool_names or []:
             if self.store.get_impression(name):
-                self.store.record_impression_use(name, outcome == "success")
+                if outcome != "aborted":
+                    # 中止≠工具失败：用户主动放弃的决策不该惩罚用过的工具
+                    # （confidence×0.70 会压低 recall_tools 的综合分）
+                    self.store.record_impression_use(name, outcome == "success")
                 imp = self.store.get_impression(name)
                 tool_report.append({"工具": name, "结果": outcome,
                                     "印象置信度": round(imp.confidence, 3)

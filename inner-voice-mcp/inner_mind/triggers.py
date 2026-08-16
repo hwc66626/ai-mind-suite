@@ -100,10 +100,13 @@ def match_event(voice: Voice, context: str) -> tuple[bool, str]:
     for kw in [k.strip() for k in (voice.keywords or "").split(",") if k.strip()]:
         if _norm(kw) in ctx:
             return True, kw
-    # 分类限定：分类名本身也要出现在上下文里（无 brain 桥也能工作）
+    # 分类通道：分类叶名出现在上下文里即触发（无 brain 桥也能工作）。
+    # 与 keywords 是并列的 OR 通道而非互斥：set_note 允许同时填两个字段，
+    # 若 keywords 非空就把 category 短路掉，"keywords=部署, category=上线"
+    # 会变成一条 category 永不生效的半死配置
     if voice.category:
         leaf = _norm(voice.category.rsplit("/", 1)[-1])
-        if leaf and leaf in ctx and not voice.keywords:
+        if leaf and leaf in ctx:
             return True, voice.category
     return False, ""
 

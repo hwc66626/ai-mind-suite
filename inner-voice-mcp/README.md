@@ -5,7 +5,7 @@
 
 ## 它做什么
 
-四类提醒，对应四种"想对未来的自己说的话"：
+五类提醒，对应五种"想对未来的自己说的话"：
 
 | 场景 | 工具 | 触发方式 |
 |---|---|---|
@@ -13,14 +13,33 @@
 | 做完某事时提醒（"睡觉时给手机充电"） | `set_task_reminder` + `report_task_done` | 汇报任务完成时即时触发 |
 | 碰到某关键词提醒 | `set_note` | `check_gate` 传入的上下文命中关键词 |
 | 某节点自问（"提交前测试跑全了吗"） | `ask_myself` | 过对应闸门时被问出 |
+| **说了要做的事到期核查（承诺看门狗）** | `make_promise` + `fulfill_promise` | 登记即设核查时限，守护进程到期催办；兑现必须附证据 |
 
 其余工具是日常管理：`inbox` 看未答提醒、`answer` 回答（可回写 brain-memory）、
 `snooze` 延后、`list_voices` / `deactivate_voice` 查看与停用、`review` 复盘、
-`reflect` 即时自问清单、`preset_checklist` 一键登记内置检查单、`daemon_status`
-守护进程状态。
+`reflect` 即时自问清单、`preset_checklist` 一键登记内置检查单、
+`list_promises` 承诺账本一览、`daemon_status` 守护进程状态。
 
 `set_alarm` 的时间规格：`"23:00"`（每天该时刻）、`"+90m"`（相对现在）、
 ISO 绝对时间；`every=0` 为一次性。
+
+### 承诺看门狗：专治"口说无凭"
+
+模型说"我做完了"，但拿不出证据——这是空口承诺，和没做一样。
+承诺看门狗把口头承诺落库成账，兑现必须附证据：
+
+```
+make_promise("修复 auth 模块的空指针", deadline_minutes=30)
+  → 承诺 1 登记，30 分钟后核查；守护进程每 tick 检查，到期未兑催办入收件箱
+模型: 我已经修好了。（无证据）
+fulfill_promise(evidence="") → 拒绝："空证据的'做完了'正是要拦截的对象"
+模型: pytest tests/test_auth.py 12 passed in 3.2s
+fulfill_promise(evidence="pytest … 12 passed") → 已兑现，催办链了结
+```
+
+放弃也要留痕：`release_promise` 必须给理由，无因放弃被拒绝；
+`preset_checklist` 内置 `before_finish` 闸门（结束前三问），
+过闸时未兑现承诺会被质问出来。
 
 ## 客观限制
 
@@ -45,7 +64,7 @@ ISO 绝对时间；`every=0` 为一次性。
 
 定价按 deepseek-v4-flash：输入命中 ¥0.02/M、未命中 ¥1/M、输出 ¥2/M（[官方价格](https://api-docs.deepseek.com/zh-cn/quick_start/pricing/)）。
 
-实测方法：AST 解析 `server.py` 的 15 个工具定义（名称+描述+参数 schema，即宿主每轮注入的静态部分）；新旧引擎同场景各跑 8 次典型调用量返回值。
+实测方法：AST 解析 `server.py` 的工具定义（名称+描述+参数 schema，即宿主每轮注入的静态部分）；新旧引擎同场景各跑 8 次典型调用量返回值。瘦身实测时为 15 个工具（承诺看门狗 4 个为后续新增，19 个现值见套件根 `scripts/measure_tool_tokens.py`）。
 
 | 项 | 改前 | 改后 |
 |---|---|---|

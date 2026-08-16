@@ -27,8 +27,14 @@ class InnerVoice:
     # ================= 登记内心声音 =================
     def ask_myself(self, text: str, why: str = "", gate: str = "before_commit",
                    priority: int = 3) -> dict:
-        gate = gate if gate in C.GATES else "before_commit"
-        v = Voice(kind="question", text=text.strip(), why=why.strip(),
+        text = (text or "").strip()
+        if not text:
+            return {"错误": "质问内容不能为空"}
+        if gate not in C.GATES:
+            # 不静默改写到默认闸门：挂错位置的质问永远不会被问出来，
+            # 调用方却以为登记成功（与 preset_checklist 的报错风格一致）
+            return {"错误": f"未知闸门：{gate}", "可选": list(C.GATES)}
+        v = Voice(kind="question", text=text, why=why.strip(),
                   gate=gate, window_minutes=C.GATE_COOLDOWN_MIN,
                   priority=min(5, max(1, priority)))
         v = self.store.add_voice(v)
@@ -50,6 +56,13 @@ class InnerVoice:
 
     def set_note(self, text: str, keywords: str, category: str = "",
                  why: str = "", priority: int = 3) -> dict:
+        text = (text or "").strip()
+        if not text:
+            return {"错误": "便签内容不能为空"}
+        if not (keywords or "").strip() and not (category or "").strip():
+            # 关键词和分类都空的便签在 match_event 里永不命中：
+            # 一条占库、进列表、永不工作的死便签
+            return {"错误": "keywords 与 category 至少给一个（否则永不触发）"}
         # 便签去重：同关键词+同内容的便签只留一张（现实中的冰箱门贴满
         # 同一张便利贴没有意义）
         dup = dedupe_keywords(self.store.list_voices(active_only=True), text,
@@ -88,6 +101,90 @@ class InnerVoice:
         return {"声音id": v.id, "内容": v.text, "锚定任务": v.bind_task,
                 "冷却分钟": v.window_minutes}
 
+    # ================= 承诺看门狗（防"答应即终止"） =================
+
+    def make_promise(self, action: str, deadline_minutes: int = 30,
+                     why: str = "") -> dict:
+        """口头承诺落库成账：说了"马上做 X"，就登记成可追踪的承诺。
+
+        守护进程到期核查：未兑现则每 PROMISE_RENAG_MIN 分钟重叩 +
+        蔡格尼克式升级，直到 fulfill_promise（必须带证据）或
+        release_promise（留痕放弃）。撒手不管的代价是收件箱永远红着。
+        """
+        action = (action or "").strip()
+        if not action:
+            return {"错误": "action 不能为空：承诺的是什么"}
+        deadline_minutes = max(1, int(deadline_minutes))
+        due = datetime.now() + timedelta(minutes=deadline_minutes)
+        v = Voice(kind="promise", text=action, why=why,
+                  due_at=iso(due), every=0, window_minutes=0, priority=4)
+        v = self.store.add_voice(v)
+        ensure_daemon(self.store)
+        return {
+            "承诺id": v.id, "承诺": action, "核查时限": f"{deadline_minutes}分钟",
+            "协议": "兑现时 fulfill_promise 必须附证据（命令输出/文件/测试结果）；"
+                    "做不到就 release_promise 说明原因——无证据的'做完了'不算兑现",
+        }
+
+    def fulfill_promise(self, promise_id: int, evidence: str) -> dict:
+        """兑现承诺。evidence 为空直接拒绝——口说无凭。"""
+        v = self.store.get_voice(int(promise_id))
+        if not v or v.kind != "promise":
+            return {"错误": f"承诺不存在：{promise_id}"}
+        if not v.active:
+            return {"错误": "该承诺已完结（已兑现或已放弃）"}
+        evidence = (evidence or "").strip()
+        if not evidence:
+            return {"错误": "承诺兑现需要证据：命令输出摘要 / 产物路径 / "
+                           "测试结果。空证据的'做完了'正是要拦截的对象"}
+        now = datetime.now()
+        # 该承诺名下所有未答叩门一并了结（催办链终止）
+        closed = 0
+        for p in self.store.open_pings(now, limit=C.INBOX_MAX):
+            if p.voice_id == v.id:
+                self.store.answer_ping(p.id, evidence[:200], "done", now)
+                closed += 1
+        self.store.update_voice_fields(v.id, active=0)
+        memo = ""
+        try:
+            r = self.bridge.remember(
+                f"兑现承诺：{v.text}\n证据：{evidence[:150]}",
+                importance=0.5, categories=["承诺"])
+            memo = r.get("id") or ""
+        except Exception:
+            pass   # 记忆桥不可用时承诺结算不受影响
+        return {"承诺id": v.id, "承诺": v.text[:60], "状态": "已兑现",
+                "证据": evidence[:120], "了结催办": closed, "记忆": memo}
+
+    def release_promise(self, promise_id: int, reason: str) -> dict:
+        """放弃承诺（必须说明原因，留痕可审计）。"""
+        v = self.store.get_voice(int(promise_id))
+        if not v or v.kind != "promise":
+            return {"错误": f"承诺不存在：{promise_id}"}
+        if not v.active:
+            return {"错误": "该承诺已完结"}
+        reason = (reason or "").strip()
+        if not reason:
+            return {"错误": "放弃承诺必须说明原因——无因放弃等于把承诺当空气"}
+        now = datetime.now()
+        closed = 0
+        for p in self.store.open_pings(now, limit=C.INBOX_MAX):
+            if p.voice_id == v.id:
+                self.store.answer_ping(p.id, f"放弃：{reason[:150]}",
+                                       "dismissed", now)
+                closed += 1
+        self.store.update_voice_fields(v.id, active=0)
+        return {"承诺id": v.id, "承诺": v.text[:60], "状态": "已放弃",
+                "原因": reason[:150], "了结催办": closed}
+
+    def list_promises(self, active_only: bool = True) -> list[dict]:
+        out = []
+        for v in self.store.list_voices(active_only=active_only,
+                                        kind="promise"):
+            out.append({"id": v.id, "承诺": v.text[:60],
+                        "下次核查": v.due_at, "优先级": v.priority})
+        return out
+
     def report_task_done(self, done_task: str, detail: str = "") -> dict:
         """汇报任务完成：事件型闹钟的"到点"时刻。
 
@@ -101,8 +198,11 @@ class InnerVoice:
         fired = []
         new_ids: set[int] = set()   # 本次刚产生的叩门：不能再进"待答叩门"重复列出
         for v in self.store.list_voices(active_only=True, kind="task"):
-            if match_task(v.bind_task, done_task) and cooldown_ok(v, now):
-                p = self.store.add_ping(v, source="task", fired_at=now)
+            if not match_task(v.bind_task, done_task):
+                continue
+            p = self.store.add_ping_if_cooled(v, source="task", fired_at=now,
+                                              is_cooled=cooldown_ok)
+            if p:
                 new_ids.add(p.id)
                 fired.append({"ping": p.id, "提醒": v.text, "锚定任务": v.bind_task})
         # task_end 闸门：收尾质问 + 便签命中（与 check_gate 同一套机制）
@@ -160,16 +260,23 @@ class InnerVoice:
         不再进"待答叩门"重复列出。
         """
         if gate not in C.GATES:
-            gate = "any"
+            # 与 ask_myself 一致：不静默归到 any（归过去等于什么都没检查，
+            # 调用方还以为过了闸门）
+            return {"错误": f"未知闸门：{gate}", "可选": list(C.GATES)}
+        ensure_daemon(self.store)   # 只用 check_gate 的宿主也得有生物钟：
+        # 文档承诺 inbox/check_gate/set_alarm 任一调用即自动拉起守护进程，
+        # 漏了这里的话闹钟永不触发、叩门永不升级，且全程无任何报错
         now = datetime.now()
         fired = []
         fired_ids: set[int] = set(exclude_ids or ())
 
-        # 1) 闸门质问（冷却内的不再问）
+        # 1) 闸门质问（冷却内的不再问；检查+叩门在 store 锁内原子完成，
+        #    并发过同一闸门不会对同一质问产生两条叩门）
         for v in self.store.list_voices(active_only=True, kind="question",
                                         gate=gate):
-            if cooldown_ok(v, now):
-                p = self.store.add_ping(v, source="gate", fired_at=now)
+            p = self.store.add_ping_if_cooled(v, source="gate", fired_at=now,
+                                              is_cooled=cooldown_ok)
+            if p:
                 fired_ids.add(p.id)
                 fired.append({"ping": p.id, "来源": "闸门", "内容": v.text,
                               "优先级": v.priority})
@@ -178,8 +285,11 @@ class InnerVoice:
         if context.strip():
             for v in self.store.list_voices(active_only=True, kind="note"):
                 hit, kw = match_event(v, context)
-                if hit and cooldown_ok(v, now):
-                    p = self.store.add_ping(v, source="event", fired_at=now)
+                if not hit:
+                    continue
+                p = self.store.add_ping_if_cooled(v, source="event", fired_at=now,
+                                                  is_cooled=cooldown_ok)
+                if p:
                     fired_ids.add(p.id)
                     fired.append({"ping": p.id, "来源": f"便签「{kw}」",
                                   "内容": v.text, "优先级": v.priority})
@@ -187,7 +297,8 @@ class InnerVoice:
         # 3) 未答叩门（守护进程攒下的闹钟等"历史"叩门；刚在本调用里
         #    触发过的已在"此刻该问"里，再列一遍会让宿主重复作答）
         pending = self.store.open_pings(now)
-        src_cn = {"alarm": "闹钟", "event": "便签", "gate": "闸门", "task": "任务提醒"}
+        src_cn = {"alarm": "闹钟", "event": "便签", "gate": "闸门",
+                  "task": "任务提醒", "promise": "未兑现承诺"}
         alarm_rows = [
             {"ping": p.id, "来源": src_cn.get(p.source, p.source),
              "内容": p.text[:60], "优先级": p.priority,
@@ -263,7 +374,7 @@ class InnerVoice:
                                        "升级": p.escalated})
         stats = self.store.ping_stats()
         if stats.get("被小睡", 0) >= 3:
-            out["一直在逃避"] = (f"共 {stats['被小睡']} 次小睡——"
+            out["一直在逃避"] = (f"累计 {stats['被小睡']} 条叩门被小睡过——"
                                "这些事一直在被推迟，值得正面回答一次")
         out["统计"] = stats
         return {k: (v if v else "（无）") for k, v in out.items()}
@@ -278,10 +389,11 @@ class InnerVoice:
             if v.gate == "any" or token_overlap(v.text, context) >= 0.12:
                 questions.append({"问题": v.text, "来源": "自设", "为什么": v.why})
 
-        # 2) 苏格拉底模板（按上下文相关度选）
+        # 2) 苏格拉底模板（按上下文相关度选；词元重合普遍为 0 时保持
+        #    原顺序取前 N，而不是按 (overlap, i, t) 整体倒序把列表反着选）
         scored = sorted(
             ((token_overlap(t, context), i, t) for i, t in
-             enumerate(C.REFLECT_TEMPLATES)), reverse=True)
+             enumerate(C.REFLECT_TEMPLATES)), key=lambda x: -x[0])
         for _s, _i, t in scored:
             if len(questions) >= n:
                 break

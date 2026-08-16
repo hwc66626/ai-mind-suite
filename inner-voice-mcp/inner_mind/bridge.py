@@ -2,7 +2,6 @@
 
 - reflect：检索相关记忆，把"过去怎么做的"变成"现在该问什么"
 - answer：问答回写长期记忆——内省产生的经验不再丢失
-- goal_alignment：便签/质问与长期目标相关时获得优先级加成
 """
 from __future__ import annotations
 
@@ -19,7 +18,9 @@ class MemoryBridge:
         root = project_root or str(
             Path(__file__).resolve().parent.parent.parent / "brain-memory-mcp")
         if root not in sys.path:
-            sys.path.insert(0, root)
+            # append 而非 insert(0)：兄弟项目根目录下有 server.py/demo.py
+            # 等通用顶层模块名，插到最前会劫持宿主进程里任何裸 import
+            sys.path.append(root)
         try:
             from brain_memory.engine import BrainMemory   # noqa: PLC0415
             db = db_path or os.environ.get(
@@ -48,12 +49,3 @@ class MemoryBridge:
                                        "event", 0.0, 0.0, None, None, "inner-voice")
         except Exception as exc:
             return {"error": f"写入失败：{exc}"}
-
-    def active_goals(self) -> list[dict]:
-        if not self.available:
-            return []
-        try:
-            return [{"name": g["name"], "priority": g["priority"]}
-                    for g in self.brain.list_goals(active_only=True)]
-        except Exception:
-            return []

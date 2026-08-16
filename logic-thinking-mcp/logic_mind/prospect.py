@@ -7,7 +7,8 @@
 - 延伸后果  Σ_k γ^{hop_k} · w(p_k) · v(impact_k)  （深度贴现，Huys 2015）
 - 目标放大  benefit 乘 (1 + κ·goal_alignment)——"目标就是完成它"时忍痛去做
 - 不作为    基线价值 = v(−GOAL_MISS×对齐) + Σ 延伸后果（"不做会怎样"）
-- 预期后悔  AR_i = λ_r · max(0, V_best − V_i)，从总分扣除后重排
+- 预期后悔  AR_i = λ_r · max(0, V_best − V_i)（仅作风险提示，不改变排序：
+           它是总分的单调变换，按哪个排顺序都一样；决断效用对比用总分）
 """
 from __future__ import annotations
 
@@ -92,7 +93,11 @@ def evaluate_option(opt: Option, trace_goal_alignment: float) -> dict:
 
 
 def rank_with_regret(breakdowns: list[dict]) -> list[dict]:
-    """按总分排名并计算预期后悔（Loomes & Sugden）：AR = λ_r·max(0, V_best−V_i)。"""
+    """按总分排名并计算预期后悔（Loomes & Sugden）：AR = λ_r·max(0, V_best−V_i)。
+
+    后悔值是总分的单调变换，排序用总分即可；"后悔调整分"仅作展示与
+    风险提示（差距越大越该犹豫），不参与 decide 的效用对比。
+    """
     ranked = sorted(breakdowns, key=lambda b: b["总分"], reverse=True)
     if not ranked:
         return ranked

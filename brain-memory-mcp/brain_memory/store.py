@@ -95,6 +95,16 @@ CREATE TABLE IF NOT EXISTS working_set (
   pinned INTEGER DEFAULT 0,
   activated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS pinned_constraints (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  content TEXT NOT NULL,
+  scope TEXT DEFAULT 'global',
+  why TEXT DEFAULT '',
+  active INTEGER DEFAULT 1,
+  created_at TEXT NOT NULL,
+  deactivated_at TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_pinned_active ON pinned_constraints(active);
 """
 
 
@@ -105,6 +115,11 @@ class Store:
 
     def __init__(self, db_path: str | Path):
         self.db_path = str(db_path)
+        if not isinstance(db_path, (str, Path)):
+            raise TypeError(
+                f"db_path 必须是路径（str/Path），拿到 {type(db_path).__name__}："
+                "误把 store/引擎对象当路径传入，会在 CWD 静默创建名字是对象"
+                "repr 的垃圾库，写进去的数据全丢")
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._ver = 1                                   # 本进程写版本号
@@ -271,27 +286,43 @@ class Store:
 
     # ---------------- categories ----------------
     def ensure_category_path(self, path_str: str, description: str = "") -> Category:
-        """'工作/项目A' -> 逐级创建并返回叶子分类。"""
+        """'工作/项目A' -> 逐级创建并返回叶子分类。
+
+        description 只写进新建的叶子节点——中间层节点由更长的路径顺带
+        创建，拿叶子的描述会产生"技术=Python笔记"这类错挂。空路径抛
+        ValueError（此前是 assert，宿主传 categories=[""] 会收到裸断言）。
+        INSERT 用 ON CONFLICT DO NOTHING：本库被三个进程共享（logic/
+        inner 的桥会回写），SELECT-then-INSERT 在跨进程并发建同名分类时
+        后者会撞唯一索引（根层 parent_id 为 NULL 时 SQLite 唯一索引视为
+        互异、不触发冲突，行为退化为与原来完全一致，不会更差）。
+        """
+        segs = [s.strip() for s in path_str.split("/") if s.strip()]
+        if not segs:
+            raise ValueError(f"分类路径为空：{path_str!r}")
         node: Category | None = None
         with self._lock:
-            for seg in [s.strip() for s in path_str.split("/") if s.strip()]:
+            for i, seg in enumerate(segs):
                 parent_id = node.id if node else None
                 row = self._conn.execute(
                     "SELECT * FROM categories WHERE parent_id IS ? AND name=?",
                     (parent_id, seg)).fetchone()
                 if row is None:
+                    desc = description if i == len(segs) - 1 else ""
                     prefix = node.path if node else ""
                     cur = self._conn.execute(
                         "INSERT INTO categories(name,parent_id,path,description,created_at) "
-                        "VALUES(?,?,?,?,?)",
-                        (seg, parent_id, "", description, _iso(now_utc()))).lastrowid
-                    path = f"{prefix}{cur}/"
-                    self._conn.execute(
-                        "UPDATE categories SET path=? WHERE id=?", (path, cur))
+                        "VALUES(?,?,?,?,?) ON CONFLICT(parent_id, name) DO NOTHING",
+                        (seg, parent_id, "", desc, _iso(now_utc()))).lastrowid
                     row = self._conn.execute(
-                        "SELECT * FROM categories WHERE id=?", (cur,)).fetchone()
+                        "SELECT * FROM categories WHERE parent_id IS ? AND name=?",
+                        (parent_id, seg)).fetchone()
+                    if cur:   # 真插入了才需要回填 path（并发冲突时 cur 为 None）
+                        path = f"{prefix}{row['id']}/"
+                        self._conn.execute(
+                            "UPDATE categories SET path=? WHERE id=?", (path, row["id"]))
+                        row = self._conn.execute(
+                            "SELECT * FROM categories WHERE id=?", (row["id"],)).fetchone()
                 node = _row_to_category(row)
-        assert node is not None
         return node
 
     def find_category(self, path_str: str) -> Category | None:
@@ -368,15 +399,18 @@ class Store:
     def add_link(self, src: str, dst: str, strength: float = 0.6,
                  link_type: str = "associates") -> int:
         with self._lock:
+            # 去重键含 link_type：同一对节点可并存"联想"与"摘要"两种边；
+            # 强度更新不覆盖 link_type，防无关调用方篡改边的类型
             row = self._conn.execute(
-                "SELECT id, strength FROM links WHERE source_id=? AND target_id=?",
-                (src, dst)).fetchone()
+                "SELECT id, strength FROM links WHERE source_id=? AND target_id=? "
+                "AND link_type=?",
+                (src, dst, link_type)).fetchone()
             if row:
                 # 重复建边：强度取较大值（联想只会越用越强，不会被弱边覆盖）
                 if strength > row["strength"]:
                     self._conn.execute(
-                        "UPDATE links SET strength=?, link_type=? WHERE id=?",
-                        (strength, link_type, row["id"]))
+                        "UPDATE links SET strength=? WHERE id=?",
+                        (strength, row["id"]))
                 return row["id"]
             return self._conn.execute(
                 "INSERT INTO links(source_id,target_id,link_type,strength,created_at) "
@@ -397,28 +431,64 @@ class Store:
         return out
 
     def repoint_links(self, old: str, new: str):
+        """固化吸收时把被吸收记忆的边转挂到锚点上，并清理平行重复边。
+
+        锚点与被吸收记忆常连着同一邻居，直接 UPDATE 会产生两行
+        (new→C) 平行边（links 无唯一约束、add_link 的去重只在插入时生效），
+        平行边会让扩散激活对该邻居双倍传能、扇出统计虚增——每轮固化
+        都可能新增，因此重指向后必须收敛：同 (source,target,link_type)
+        只留强度最高的一条（平分留 id 大的），顺带清掉历史累积的重复行。
+        BEGIN IMMEDIATE 保证中途被杀不留半完成状态。
+        """
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                self._conn.execute(
+                    "UPDATE links SET source_id=? WHERE source_id=?", (new, old))
+                self._conn.execute(
+                    "UPDATE links SET target_id=? WHERE target_id=?", (new, old))
+                self._conn.execute(
+                    "DELETE FROM links WHERE source_id=? AND target_id=?", (new, new))
+                self._conn.execute(
+                    "DELETE FROM links WHERE id IN ("
+                    "  SELECT l.id FROM links l JOIN links k"
+                    "  ON k.source_id=l.source_id AND k.target_id=l.target_id"
+                    "  AND k.link_type=l.link_type"
+                    "  AND (k.strength>l.strength OR (k.strength=l.strength AND k.id>l.id)))"
+                )
+                self._conn.execute("COMMIT")
+            except Exception:
+                self._conn.execute("ROLLBACK")
+                raise
+
+    def clear_summary_links(self, mid: str):
+        """清除某记忆的语义摘要边（summarizes / summarized_by），供固化时重建。
+
+        摘要的 top-3 源记忆会随固化轮次变化：不清旧边的话，指向旧源的
+        陈边逐轮累积，扩散激活的扇出分摊越来越薄（陈边永久稀释新边）。
+        """
         with self._lock:
             self._conn.execute(
-                "UPDATE links SET source_id=? WHERE source_id=?", (new, old))
-            self._conn.execute(
-                "UPDATE links SET target_id=? WHERE target_id=?", (new, old))
-            self._conn.execute(
-                "DELETE FROM links WHERE source_id=? AND target_id=?", (new, new))
+                "DELETE FROM links WHERE (source_id=? AND link_type='summarizes') "
+                "OR (target_id=? AND link_type='summarized_by')", (mid, mid))
 
     # ---------------- goals ----------------
     def upsert_goal(self, name: str, description: str = "", priority: int = 3) -> Goal:
+        """goals.name 有唯一索引，本库被多进程共享：SELECT-then-INSERT 并发
+        建同名目标时后者撞 UNIQUE 直接 IntegrityError。改为先无条件
+        INSERT DO NOTHING，再统一走 UPDATE 合并语义（描述非空才覆盖、
+        优先级取大），天然幂等且跨进程安全。"""
         with self._lock:
-            row = self._conn.execute("SELECT * FROM goals WHERE name=?", (name,)).fetchone()
-            if row:
-                self._conn.execute(
-                    "UPDATE goals SET description=?, priority=MAX(priority,?) WHERE name=?",
-                    (description or row["description"], priority, name))
-                row = self._conn.execute("SELECT * FROM goals WHERE name=?", (name,)).fetchone()
-            else:
-                self._conn.execute(
-                    "INSERT INTO goals(name,description,priority,active,created_at) "
-                    "VALUES(?,?,?,1,?)", (name, description, priority, _iso(now_utc())))
-                row = self._conn.execute("SELECT * FROM goals WHERE name=?", (name,)).fetchone()
+            self._conn.execute(
+                "INSERT INTO goals(name,description,priority,active,created_at) "
+                "VALUES(?,?,?,1,?) ON CONFLICT(name) DO NOTHING",
+                (name, description, priority, _iso(now_utc())))
+            self._conn.execute(
+                "UPDATE goals SET description=COALESCE(NULLIF(?,''), description), "
+                "priority=MAX(priority,?) WHERE name=?",
+                (description, priority, name))
+            row = self._conn.execute(
+                "SELECT * FROM goals WHERE name=?", (name,)).fetchone()
         return _row_to_goal(row)
 
     def get_goal(self, name: str) -> Goal | None:
@@ -540,6 +610,42 @@ class Store:
 
 
 # ---------------- helpers ----------------
+
+    # ---------------- 钉扎约束（约束钉扎：位置无法影响它） ----------------
+
+    def add_pinned(self, content: str, scope: str = "global",
+                   why: str = "") -> dict:
+        """钉扎一条硬约束：永不衰减、永不冷归档，每次打包注入最顶部。"""
+        row = {"content": content, "scope": scope or "global", "why": why or ""}
+        with self._lock:
+            cur = self._conn.execute(
+                "INSERT INTO pinned_constraints(content,scope,why,active,created_at) "
+                "VALUES(?,?,?,?,?)",
+                (row["content"], row["scope"], row["why"], 1,
+                 datetime.now().isoformat(timespec="seconds")))
+            row["id"] = cur.lastrowid
+        return row
+
+    def list_pinned(self, active_only: bool = True) -> list[dict]:
+        q = "SELECT * FROM pinned_constraints"
+        if active_only:
+            q += " WHERE active=1"
+        q += " ORDER BY id"
+        with self._lock:
+            rows = self._conn.execute(q).fetchall()
+        return [{"id": r["id"], "content": r["content"], "scope": r["scope"],
+                 "why": r["why"], "active": bool(r["active"])}
+                for r in rows]
+
+    def deactivate_pinned(self, pin_id: int) -> bool:
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE pinned_constraints SET active=0, deactivated_at=? "
+                "WHERE id=? AND active=1",
+                (datetime.now().isoformat(timespec="seconds"), pin_id))
+            return cur.rowcount > 0
+
+
 def _iso(dt: datetime) -> str:
     return dt.isoformat()
 

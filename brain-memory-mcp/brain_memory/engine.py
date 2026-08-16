@@ -65,10 +65,12 @@ class BrainMemory:
             goal_obj = self.store.upsert_goal(goal, priority=3)
         goal_encode_bonus = 0.15 * (goal_obj.priority / 5) if goal_obj else 0.0
 
-        # 情绪增强编码（杏仁核-唤醒度）：arousal 抬高初始存储强度与稳定性
+        # 情绪增强编码（杏仁核-唤醒度）：arousal 抬高初始存储强度；
+        # 衰减放缓则由 _tau() 的 (1+0.8×唤醒度) 项独立实现，
+        # 此处不再叠乘，否则唤醒度在 τ 中被平方（README 公式只出现一次）
         storage0 = clamp(0.2 + 0.3 * importance
                          + C.AROUSAL_ENCODE_BONUS * arousal + goal_encode_bonus, 0.0, 1.0)
-        stability0 = C.STABILITY_INITIAL_DAYS * (1 + C.AROUSAL_TAU_BONUS * arousal)
+        stability0 = C.STABILITY_INITIAL_DAYS
 
         m = Memory(id=gen_id(content), content=content, kind=kind,
                    importance=importance, storage_strength=storage0,
@@ -81,6 +83,8 @@ class BrainMemory:
         # 图式挂载：同一记忆在不同分类内享有独立的局部权重
         cats_out = []
         for cpath in (categories or []):
+            if not str(cpath).strip():
+                continue          # 宿主传 [""] 之类的空挂载点：跳过不崩
             cat = self.store.ensure_category_path(cpath)
             lw = 0.5
             if category_weights:
@@ -156,12 +160,15 @@ class BrainMemory:
         """成功检索的副作用：测试效应 + 间隔效应（合意困难）。
 
         提取强度越低时成功想起（难度越大），存储强度与稳定性的增益越大。
+        DIFFICULTY_GAIN_K 放大难度项（Bjork 合意困难系数，可调）：
+        K=1 为文献默认，K>1 间隔效应更强、K<1 趋近"不管难易等幅增益"。
         """
         difficulty = clamp(1.0 - r_before, 0.0, 1.0)
+        d_eff = clamp(C.DIFFICULTY_GAIN_K * difficulty, 0.0, 1.0)
         m.storage_strength = min(1.0, m.storage_strength
                                  + C.STORAGE_GAIN_PER_RETRIEVAL
-                                 * (0.3 + 0.7 * difficulty))
-        m.stability = min(m.stability * (C.STABILITY_GAIN_BASE ** (0.3 + 0.7 * difficulty)), 3650.0)
+                                 * (0.3 + 0.7 * d_eff))
+        m.stability = min(m.stability * (C.STABILITY_GAIN_BASE ** (0.3 + 0.7 * d_eff)), 3650.0)
         m.retrieval_strength = 1.0
         m.retrieval_count += 1
         m.access_count += 1
@@ -561,6 +568,8 @@ class BrainMemory:
 
     def add_category(self, name: str, parent: str | None = None,
                      description: str = "") -> dict:
+        if not (name or "").strip():
+            return {"error": "分类名不能为空"}
         path = f"{parent}/{name}" if parent else name
         cat = self.store.ensure_category_path(path, description)
         return {"分类": self._cat_label(cat), "id": cat.id}

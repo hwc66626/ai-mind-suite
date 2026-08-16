@@ -25,8 +25,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from inner_mind import config as _C                         # noqa: E402
 from inner_mind.config import DEFAULT_DB                       # noqa: E402
-from inner_mind.daemon import daemon_status as _daemon_status  # noqa: E402
 from inner_mind.daemon import ensure_daemon                    # noqa: E402
 from inner_mind.engine import InnerVoice                       # noqa: E402
 
@@ -65,6 +65,34 @@ def set_task_reminder(text: str, bind_task: str, why: str = "",
     return voice.set_task_reminder(text, bind_task, why, priority)
 
 
+# ===================== 承诺看门狗（防"答应即终止"） =====================
+
+@mcp.tool()
+def make_promise(action: str, deadline_minutes: int = 30,
+                 why: str = "") -> dict:
+    """把口头承诺落成账（说了"马上做X"就登记）。守护进程到期核查，
+    未兑现每15分钟重叩+升级萦绕，直到带证据兑现或留痕放弃。"""
+    return voice.make_promise(action, deadline_minutes, why)
+
+
+@mcp.tool()
+def fulfill_promise(promise_id: int, evidence: str) -> dict:
+    """兑现承诺（evidence 必填：命令输出/产物路径/测试结果，空证据拒绝）。"""
+    return voice.fulfill_promise(promise_id, evidence)
+
+
+@mcp.tool()
+def release_promise(promise_id: int, reason: str) -> dict:
+    """放弃承诺（必须说明原因，留痕可审计）。"""
+    return voice.release_promise(promise_id, reason)
+
+
+@mcp.tool()
+def list_promises(active_only: bool = True) -> list[dict]:
+    """承诺清单（进行中/历史）。"""
+    return voice.list_promises(active_only)
+
+
 @mcp.tool()
 def set_note(text: str, keywords: str, category: str = "",
              why: str = "", priority: int = 3) -> dict:
@@ -88,7 +116,7 @@ def deactivate_voice(voice_id: int, why: str = "") -> dict:
 def list_voices(active_only: bool = True, limit: int = 20) -> list[dict]:
     """查看已登记的声音及触发统计"""
     out = []
-    for v in voice.store.list_voices(active_only=active_only)[:max(1, limit)]:
+    for v in voice.store.list_voices(active_only=active_only)[:max(0, limit)]:
         row = {"id": v.id, "类型": v.kind, "内容": v.text[:40]}
         if v.kind == "question":
             row["闸门"] = v.gate
@@ -132,7 +160,7 @@ def answer(ping_id: int, answer: str, outcome: str = "done",
 
 
 @mcp.tool()
-def snooze(ping_id: int, minutes: int = 10) -> dict:
+def snooze(ping_id: int, minutes: int = _C.ALARM_SNOOZE_MIN) -> dict:
     """叩门小睡：稍后再提醒"""
     return voice.snooze(ping_id, minutes)
 
@@ -140,7 +168,7 @@ def snooze(ping_id: int, minutes: int = 10) -> dict:
 # ===================== 元认知：复盘与即时自问 =====================
 
 @mcp.tool()
-def reflect(context: str, n: int = 5) -> dict:
+def reflect(context: str, n: int = _C.REFLECT_MAX) -> dict:
     """即时自问清单：自设质问 + 苏格拉底模板 + 记忆对照"""
     return voice.reflect(context, n)
 
@@ -154,8 +182,9 @@ def review() -> dict:
 @mcp.tool()
 def daemon_status() -> dict:
     """守护进程状态（顺带确保已拉起）"""
-    ensure_daemon(voice.store)
-    return _daemon_status(voice.store)
+    # 直接返回 ensure 结果：spawn 后立刻查状态，子进程还没写首个心跳，
+    # 会返回"已拉起 + 运行中=False"的自相矛盾组合
+    return ensure_daemon(voice.store)
 
 
 if __name__ == "__main__":

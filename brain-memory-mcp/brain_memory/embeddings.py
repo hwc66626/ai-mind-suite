@@ -55,11 +55,18 @@ def cosine(a: dict[int, float], b: dict[int, float]) -> float:
 
 
 def first_sentence(text: str, max_len: int = 80) -> str:
-    """提取第一句（固化生成语义摘要用）。"""
+    """提取第一句（固化生成语义摘要用）。
+
+    按分隔符在文本中的实际位置取最靠前的一个，而不是按分隔符列表
+    顺序——"真的吗？很贵。"的第一句是"真的吗？"而非整串。
+    """
+    best = None
     for sep in ("。", "！", "？", "!", "?", "\n", ". "):
         idx = text.find(sep)
-        if 0 <= idx < max_len:
-            return text[: idx + 1].strip()
+        if 0 <= idx < max_len and (best is None or idx < best):
+            best = idx
+    if best is not None:
+        return text[: best + 1].strip() or text[:max_len].strip()
     return text[:max_len].strip()
 
 

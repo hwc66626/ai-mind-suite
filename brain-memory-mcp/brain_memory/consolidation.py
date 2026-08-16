@@ -69,6 +69,7 @@ def consolidate(brain) -> dict:
                 store.set_memory_category(anchor.id, cat.id, lw)
             store.copy_goal_links(absorbed.id, anchor.id)
             store.repoint_links(absorbed.id, anchor.id)
+            store.ws_remove(absorbed.id)   # 吸收者让出工作记忆（RAM 不驻留已合并条目）
             merged_ids.update({absorbed.id, anchor.id})
             stats["合并吸收"].append({"保留": anchor.id, "吸收": absorbed.id,
                                      "相似度": round(sim, 3),
@@ -99,8 +100,12 @@ def consolidate(brain) -> dict:
             existing.vec = embed(content)
             existing.storage_strength = min(1.0, existing.storage_strength + 0.05)
             existing.last_accessed_at = now
+            existing.last_retrieved_at = now   # 睡眠重放：摘要被"重新想起"，R 归一
+            if existing.tier == "cold":
+                existing.tier = "warm"         # 已转冷的摘要随更新复活（皮层要点不无声死亡）
             store.update_memory(existing)
             sid = existing.id
+            store.clear_summary_links(sid)     # 清掉旧 top 的边再重建：防反复固化累积陈边稀释扩散
         else:
             sm = Memory(id=gen_id(content), content=content, kind="semantic_summary",
                         importance=0.6, storage_strength=0.5, retrieval_strength=1.0,

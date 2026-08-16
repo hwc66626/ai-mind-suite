@@ -82,12 +82,19 @@ def parse_iso(s: str) -> datetime | None:
         d = datetime.fromisoformat(s)
     except ValueError:
         return None
-    return d.replace(tzinfo=None) if d.tzinfo else d   # 统一为本地 naive
+    # 带 tz 的串先转到本地再摘掉 tzinfo——直接 replace 是把 UTC 墙钟当
+    # 本地墙钟，会错位数小时（与 triggers.parse_when 的语义对齐）
+    return d.astimezone().replace(tzinfo=None) if d.tzinfo else d
 
 
 class VoiceStore:
     def __init__(self, db_path: str | Path):
         self.db_path = str(db_path)
+        if not isinstance(db_path, (str, Path)):
+            raise TypeError(
+                f"db_path 必须是路径（str/Path），拿到 {type(db_path).__name__}："
+                "误把 store/引擎对象当路径传入，会在 CWD 静默创建名字是对象"
+                "repr 的垃圾库，写进去的数据全丢")
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
@@ -172,6 +179,26 @@ class VoiceStore:
             self._conn.execute(
                 f"UPDATE voices SET {cols} WHERE id=?", (*fields.values(), vid))
 
+    def advance_alarm_cas(self, vid: int, old_due: str,
+                          new_due: str | None) -> bool:
+        """闹钟占位的原子推进（CAS）：以旧 due_at 为条件更新，返回是否抢到。
+
+        守护进程锁接管的窗口内（旧实例 hang 住、心跳过期被新实例偷锁），
+        两个实例可能各自跑一次 tick、对同一闹钟各补一声叩门。条件更新
+        里带旧值：第二个到达者 rowcount=0，自然跳过——同一闹钟只响一声。
+        new_due=None 表示一次性闹钟完成（置 active=0）。
+        """
+        with self._lock:
+            if new_due is None:
+                cur = self._conn.execute(
+                    "UPDATE voices SET active=0 WHERE id=? AND due_at=? "
+                    "AND active=1", (vid, old_due))
+            else:
+                cur = self._conn.execute(
+                    "UPDATE voices SET due_at=? WHERE id=? AND due_at=? "
+                    "AND active=1", (new_due, vid, old_due))
+            return cur.rowcount > 0
+
     def list_voices(self, active_only: bool = True, kind: str | None = None,
                     gate: str | None = None) -> list[Voice]:
         q, args = "SELECT * FROM voices", []
@@ -192,11 +219,14 @@ class VoiceStore:
         return [self._row_to_voice(r) for r in rows]
 
     def alarms_due(self, now: datetime) -> list[Voice]:
-        """到期闹钟（含过期的：离线期间错过的也要补一声）。"""
+        """到期触发项：闹钟（到点响）+ 承诺（到期未兑现即催办）。
+
+        含过期的：离线期间错过的也要补一声。
+        """
         with self._lock:
             rows = self._conn.execute(
-                "SELECT * FROM voices WHERE kind='alarm' AND active=1 "
-                "AND due_at<>'' AND due_at<=? ORDER BY due_at",
+                "SELECT * FROM voices WHERE kind IN ('alarm','promise') "
+                "AND active=1 AND due_at<>'' AND due_at<=? ORDER BY due_at",
                 (iso(now),)).fetchall()
         return [self._row_to_voice(r) for r in rows]
 
@@ -223,6 +253,21 @@ class VoiceStore:
                 "UPDATE voices SET asked_count=asked_count+1, last_fired_at=? "
                 "WHERE id=?", (iso(fired_at), voice.id))
         return p
+
+    def add_ping_if_cooled(self, voice: Voice, source: str, fired_at: datetime,
+                           is_cooled) -> Ping | None:
+        """冷却检查 + 叩门 + 刷新 last_fired_at 在同一把锁内完成。
+
+        拆开写的话（engine 里先 cooldown_ok 再 add_ping），MCP 的 worker
+        线程并发过同一闸门时两方都读到"未触发过"，同一质问产生两条
+        叩门——一条被答掉后另一条留在收件箱持续升级萦绕。锁内重读
+        voices 行保证判定用的是最新 last_fired_at。
+        """
+        with self._lock:
+            fresh = self.get_voice(voice.id)
+            if not fresh or not is_cooled(fresh, fired_at):
+                return None
+            return self.add_ping(fresh, source, fired_at)
 
     def get_ping(self, pid: int) -> Ping | None:
         with self._lock:
@@ -310,8 +355,14 @@ class VoiceStore:
             row = self._conn.execute(
                 "SELECT COUNT(*) c FROM pings WHERE answered_at<>''").fetchone()
             answered_c = row["c"]
+            # 累计小睡过：真实小睡按 snoozed_until 判（snooze 时写入、
+            # answer 不清除，答掉也永久计数）；兼容直接以 outcome='snoozed'
+            # 落库的历史/手工标记。不能只看 outcome——answer 会把它覆盖成
+            # done，"反复小睡 10 次最后答掉"的叩门贡献会归零，最该被
+            # "逃避"点名的人恰好逃过点名
             row = self._conn.execute(
-                "SELECT COUNT(*) c FROM pings WHERE outcome='snoozed'"
+                "SELECT COUNT(*) c FROM pings "
+                "WHERE snoozed_until<>'' OR outcome='snoozed'"
             ).fetchone()
             snoozed_c = row["c"]
         return {"未答": open_c, "已答": answered_c, "被小睡": snoozed_c}

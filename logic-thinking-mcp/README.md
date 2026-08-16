@@ -82,7 +82,7 @@ MCP 客户端注册（stdio）：
 目录需与本项目同级（记忆桥按相对路径查找；也可用 `LT` 环境外的
 `sys.path` 自行注入）。
 
-## 工具清单（18 个）
+## 工具清单（23 个）
 
 | 分组 | 工具 | 作用 |
 |---|---|---|
@@ -100,6 +100,29 @@ MCP 客户端注册（stdio）：
 | 审计 | `get_trace` / `list_traces` / `attention_status` | 轨迹查看：`get_trace` 默认索引视图（阶段/账本计数/方案排名/决断，实测比全量省 90%），后果树与证据流水用 `detail="full"` 按需展开 |
 | 工具印象 | `register_tool_impression` / `recall_tools` / `update_tool_impression` | 索引式工具缓存 |
 | 规划 | `plan_mea` | 手段-目的分析：差异→算子→子目标递归 |
+| 目标锁 | `goal_begin` | 登记目标锁：把"答应"变成可机检承诺（todos/artifacts/checks 三类验收标准，至少一项，空标准拒绝登记） |
+| | `goal_progress` | 逐项销账：待办完成须附证据，产物落盘自动核验，检查命令实时执行看退出码 |
+| | `goal_stop` | **停止闸门**：申请结束回合时验收——证据不齐返回 `block` 并列出缺口，全达标才 `approve`；每次申请留痕可审计 |
+| | `goal_abandon` | 显式放弃：必须给出理由，无因放弃被拒绝 |
+| | `goal_board` | 目标看板：全部目标锁状态一览（running/done/abandoned + 完成度） |
+
+### 目标锁：专治"答应即终止"
+
+模型接了任务说"好的我马上修"，然后不再调用任何工具、干净结束回合——
+行业标准循环里"模型不再调工具"就是结束，无人知道任务实际是 0/3。
+目标锁把承诺变成状态机 `running → done（验收通过）| abandoned（显式放弃）`，
+结束回合前必须过 `goal_stop` 验收器，宿主必须服从 `block` 决定并返回执行：
+
+```
+goal_begin("修复登录三个问题", todos=["修A","修B","写报告"], artifacts=["FIXREPORT.md"], checks=["pytest -q"])
+  ↓ 干活：goal_progress 逐项销账（附证据）
+goal_stop(final_message="好的，我马上修复全部三个问题！")
+  → decision=block（待办未清零 3/3 + 产物缺失）→ 被打回继续
+goal_stop(...) → block → goal_stop(...) → approve（3/3 + 产物在 + 检查退出码 0）
+```
+
+验收器只认三类硬证据：待办勾销记录、产物文件存在性、检查命令真实退出码。
+空手申请结束一律 `block`，且每次申请写入审计日志（申请内容/decision/缺口清单）。
 
 ## 科学依据（每条机制的出处）
 

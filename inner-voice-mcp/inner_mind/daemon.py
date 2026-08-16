@@ -94,9 +94,13 @@ class VoiceDaemon:
                 pid = 0
         if pid and _pid_alive(pid):
             # pid 活着还得心跳新鲜才算数：原守护进程被 kill 后 pid 可能被
-            # 无关进程复用，那时锁会永久卡死——阈值放宽 3 倍容忍受偶发卡顿。
+            # 无关进程复用，那时锁会永久卡死。
             # 心跳缺失时退回锁自身的时间戳（刚抢锁、首次心跳未写的启动窗口）；
-            # 阈值用锁持有者自报的间隔（心跳里带着），别拿自己的配置猜别人
+            # 阈值用锁持有者自报的间隔（心跳里带着），别拿自己的配置猜别人。
+            # 阈值必须与 daemon_status 的死亡判定一致（STALE_FACTOR=3×）：
+            # 此处若更宽（如再×3=9×），hang 住的守护进程会落入"状态已判死、
+            # 接管又被拒"的空窗——服务器每次调用都 spawn 新进程、新进程
+            # 全部因锁退出，闹钟停摆且无人知晓
             hb_raw = self.store.get_meta(HEARTBEAT_KEY, "")
             hb_ts, hb_iv = _parse_hb(hb_raw)
             ref = hb_ts or (raw.split("|", 1)[1] if "|" in raw else "")
@@ -105,7 +109,7 @@ class VoiceDaemon:
             if ref:
                 try:
                     age = (datetime.now() - datetime.fromisoformat(ref)).total_seconds()
-                    fresh = age <= ref_iv * C.HEARTBEAT_STALE_FACTOR * 3
+                    fresh = age <= ref_iv * C.HEARTBEAT_STALE_FACTOR
                 except ValueError:
                     fresh = False
             if fresh:
@@ -120,17 +124,30 @@ class VoiceDaemon:
 
     # ---------------- 主循环的一个 tick（纯逻辑，可测试） ----------------
     def run_tick(self, now: datetime) -> dict:
-        summary = {"闹钟触发": 0, "升级萦绕": 0, "清理已答": 0}
+        summary = {"闹钟触发": 0, "承诺催办": 0, "升级萦绕": 0, "清理已答": 0}
 
-        # 1) 到期闹钟
+        # 1) 到期触发（闹钟 + 承诺）。先推进 due_at/停用、再补叩门：反过来
+        #    的话，叩门后进程被杀（断电/kill -9），下次 tick 会因 due_at
+        #    仍到期对同一闹钟再补一声——违背"错过的只补最近一次，不无限
+        #    回放"的语义。先占位后叩门，崩溃时宁可少一声、不重复。
+        #    占位用 CAS（以旧 due_at 为条件）：锁接管窗口内新旧实例交叠
+        #    跑 tick 时，第二个到达者抢不到占位、跳过叩门，不会双响
         for v in self.store.alarms_due(now):
-            self.store.add_ping(v, source="alarm", fired_at=now)
-            summary["闹钟触发"] += 1
-            nxt = self._next_occurrence(v, now)
-            if nxt is None:
-                self.store.update_voice_fields(v.id, active=0)   # 一次性闹钟完成
+            if v.kind == "promise":
+                # 承诺与闹钟的语义差异：响一声就完的是闹钟；承诺到期
+                # 未兑现不能停——按 PROMISE_RENAG_MIN 重叩，直到
+                # fulfill_promise（带证据）或 release_promise（留痕放弃）
+                nxt = now + timedelta(minutes=C.PROMISE_RENAG_MIN)
+                src = "promise"
             else:
-                self.store.update_voice_fields(v.id, due_at=iso(nxt))
+                nxt = self._next_occurrence(v, now)
+                src = "alarm"
+            won = self.store.advance_alarm_cas(
+                v.id, v.due_at, None if nxt is None else iso(nxt))
+            if not won:
+                continue   # 已被另一实例处理（或已被停用），不再叩门
+            self.store.add_ping(v, source=src, fired_at=now)
+            summary["承诺催办" if src == "promise" else "闹钟触发"] += 1
 
         # 2) 未答升级
         summary["升级萦绕"] = len(self.store.escalate_stale(
@@ -169,6 +186,7 @@ class VoiceDaemon:
         if not ok:
             print(f"[inner-voice-daemon] 退出：{info}", file=sys.stderr)
             return 0
+        mine = info   # 抢到的锁值 "pid|时间"，用于循环中核验所有权
         print(f"[inner-voice-daemon] 启动 pid={os.getpid()} db={self.store.db_path} "
               f"interval={self.interval}s", file=sys.stderr)
         while True:
@@ -178,11 +196,19 @@ class VoiceDaemon:
                 self.store.set_meta(HEARTBEAT_KEY, "")   # 心跳一并清：状态立即归位
                 print("[inner-voice-daemon] 收到停止请求，退出", file=sys.stderr)
                 return 0
+            # 锁所有权核验：hang 住的旧实例恢复心跳后，新实例可能已按
+            # 死亡判定接管——两个实例同时跑会双份触发闹钟。发现自己
+            # 不再持有锁就立刻让位（新实例心跳新鲜，抢不回来也不该抢）
+            if self.store.get_meta(LOCK_KEY, "") != mine:
+                print("[inner-voice-daemon] 锁已被其他实例接管，退出",
+                      file=sys.stderr)
+                return 0
             try:
                 self.heartbeat()
                 self.run_tick(datetime.now())
             except Exception as exc:   # 单次 tick 失败不能带崩守护进程
-                print(f"[inner-voice-daemon] tick 异常：{exc!r}", file=sys.stderr)
+                print(f"[inner-voice-daemon] {iso(datetime.now())} "
+                      f"tick 异常：{exc!r}", file=sys.stderr)
             time.sleep(self.interval)
 
 
@@ -239,8 +265,19 @@ def ensure_daemon(store: VoiceStore) -> dict:
             subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS)
     else:
         popen_kwargs["start_new_session"] = True
-    subprocess.Popen(
-        [sys.executable, str(entry)],
-        env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL, cwd=str(root), **popen_kwargs)
+    # stderr 落盘到库同目录 daemon.log：接 DEVNULL 的话，磁盘满/库损坏等
+    # 持续故障表现为"心跳健康、运行中"，而闹钟实际一个都没触发——
+    # 恰是这个组件唯一职责的静默失效
+    # 子进程继承 fd，父进程句柄随 with 退出立即释放
+    try:
+        with open(Path(store.db_path).parent / "daemon.log", "ab") as logf:
+            subprocess.Popen(
+                [sys.executable, str(entry)],
+                env=env, stdin=subprocess.DEVNULL, stdout=logf,
+                stderr=logf, cwd=str(root), **popen_kwargs)
+    except OSError:
+        subprocess.Popen(
+            [sys.executable, str(entry)],
+            env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, cwd=str(root), **popen_kwargs)
     return {**st, "动作": "已拉起新守护进程（约1个心跳周期后生效）"}

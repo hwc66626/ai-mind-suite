@@ -42,10 +42,16 @@ def plan(current_state: list[str], goal_state: list[str],
     max_depth = C.MEA_MAX_DEPTH if max_depth is None else int(max_depth)
     ops = list(impressions)
     for op in (extra_operators or []):
+        # 临时算子必须带向量：_best_operator 用 cosine(fv, imp.vec) 匹配，
+        # 不生成 vec 的话临时算子恒为 0 相似度、永远低于 MEA_MATCH_SIM，
+        # 宿主声明的算子全部静默失效、差异被误判为能力缺口
+        name = str(op.get("name", "临时算子"))
+        cap = str(op.get("capability", "") or "")
+        red = str(op.get("reduces", "") or "")
         ops.append(ToolImpression(
-            name=op.get("name", "临时算子"), capability=op.get("capability", ""),
-            reduces=op.get("reduces", ""),
-            prerequisites=op.get("prerequisites", []), confidence=0.5))
+            name=name, capability=cap, reduces=red,
+            prerequisites=op.get("prerequisites", []) or [], confidence=0.5,
+            vec=embed(f"{red} {cap} {name}")))
 
     current_vecs = [embed(c) for c in current_state if c.strip()]
     missing, covered = [], []
