@@ -74,6 +74,21 @@ cd ../inner-voice-mcp  && INNER_MIND_NO_DAEMON=1 python3 tests/test_voice.py
 
 三个文件夹保持并排放置（后两个按相对路径桥接记忆库）。详细的导入步骤、环境变量、验证清单见 [IMPORT.md](IMPORT.md)。接入 DeepSeek Harness（dsh）见 [inner-voice-mcp/dsh-integration](inner-voice-mcp/dsh-integration/README.md)。
 
+## 为什么接入了却感觉不到效果
+
+最常见的疑问："功能都在测试里跑通了，为什么实际用起来模型还是老样子？"
+三层原因，逐层排查：
+
+| 层 | 原因 | 现象 | 解法 |
+|---|---|---|---|
+| 1. 没真正接入 | 客户端里没配 `mcpServers`，或路径过期、进程没起来 | 模型世界里根本没有这些工具 | 客户端 MCP 面板确认三个服务器在线；跑 `python3 scripts/verify_client_view.py` 复现模型视角 |
+| 2. 协议没进系统提示词 | MCP 是被动工具箱：工具要模型**主动调用**才生效，而四闸门治理的恰恰是"不调工具就想收工" | 工具在列，模型却从不用 `goal_begin` | 三个 server.py 已通过 initialize 握手的 `instructions` 字段注入强制协议（支持该字段的客户端会拼进系统提示词）；若宿主不支持，把 [`HOST_RULES.md`](HOST_RULES.md) 的复制区贴进规则文件（Trae 规则 / `.cursorrules` / `CLAUDE.md`），协议 100% 生效 |
+| 3. 软约束的本质 | 提示词级协议显著改变默认行为，但不是物理拦截，弱模型仍可能无视 | 多数任务变好，偶尔还是偷懒 | 硬拦截用宿主 hook：Claude Code 的 `Stop` hook 挂 `python3 logic-thinking-mcp/cli.py goal-pending`，存在未完结目标锁时退出码 1，回合被强制续跑——不再依赖模型自觉 |
+
+三分钟见效路径：`verify_client_view.py` 确认接入 → 贴 `HOST_RULES.md` 复制区 →
+用其自带的自检清单（五个场景各 1 分钟）验收。诚实边界：第 1、2 层解决后效果立现；
+第 3 层的 hook 是唯一硬保证，提示词协议是概率性的——模型越弱，越需要 hook。
+
 ## 架构
 
 ```

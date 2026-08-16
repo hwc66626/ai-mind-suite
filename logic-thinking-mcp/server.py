@@ -36,7 +36,28 @@ try:
 except ImportError:  # pragma: no cover
     from mcp.server.fastmcp import FastMCP as _Server
 
-mcp = _Server("logic-thinking")
+# 握手注入：MCP initialize 的 instructions 字段会被支持它的客户端
+# （Claude Desktop / Cursor / Trae 等）拼进系统提示词——这是服务器唯一能
+# "主动教模型怎么用自己"的协议级通道，比等模型自己翻工具列表可靠得多。
+INSTRUCTIONS = (
+    "【强制工作协议 - logic-thinking】\n"
+    "1. 接到多步任务，第一动作调 goal_begin 登记验收标准"
+    "（todos/artifacts/checks）。登记即预授权执行，"
+    "禁止复述目标问用户\"是否执行\"。\n"
+    "2. 每完成一项调 goal_progress 销账，必须附真实证据"
+    "（命令输出/产物路径/测试结果），不许空口销账。\n"
+    "3. 收工前必须调 goal_stop：decision=block 时禁止结束回合，"
+    "按列出的缺口继续执行；只有 approve 才算任务完成。\n"
+    "4. 想把问题抛给用户，先过 ask_gate（仅 irreversible/credential/"
+    "ambiguity/external 四类可问）；被退回 decision=self 就自主判断、"
+    "在产物中标注假设并继续。\n"
+    "5. 想换方案或降低标准，先过 propose_deviation：省力+降标会被 reject，"
+    "按原方案继续；登记待裁决期间其余待办照常执行，不许停摆。\n"
+    "6. 低置信或高风险决策走 quick_think 升级深思；重大决策未获 decide "
+    "颁发的执行许可不得执行。"
+)
+
+mcp = _Server("logic-thinking", instructions=INSTRUCTIONS)
 
 
 # ===================== System 1：快思考与通道路由 =====================

@@ -33,7 +33,23 @@ try:
 except ImportError:  # pragma: no cover
     from mcp.server.fastmcp import FastMCP as _Server
 
-mcp = _Server("brain-memory")
+# 握手注入：MCP initialize 的 instructions 字段会被支持它的客户端
+# （Claude Desktop / Cursor / Trae 等）拼进系统提示词——这是服务器唯一能
+# "主动教模型怎么用自己"的协议级通道，比等模型自己翻工具列表可靠得多。
+INSTRUCTIONS = (
+    "【强制记忆协议 - brain-memory】\n"
+    "1. 会话开局第一动作调 session_start：取回上个会话沉淀的事实与钉扎"
+    "约束，禁止让用户重新交代已知信息。\n"
+    "2. 用户给出硬约束（必须/不许/一律）时立即 pin_constraint 钉扎，"
+    "之后每个相关任务开工前 recall(category/scope) 复核。\n"
+    "3. 会话收尾调 session_close(facts=[...]) 沉淀本会话事实——"
+    "先于一切告别语执行。\n"
+    "4. 回答涉及历史/偏好/项目背景的问题前先 recall；检索不到就承认"
+    "不知道，禁止凭空编造\"上次说过\"。\n"
+    "5. 长上下文用 context_pack 按 token 预算取策展包，不要全量 dump。"
+)
+
+mcp = _Server("brain-memory", instructions=INSTRUCTIONS)
 
 
 # ===================== 编码与检索 =====================

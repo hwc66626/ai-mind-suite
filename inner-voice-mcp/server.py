@@ -39,7 +39,23 @@ try:
 except ImportError:  # pragma: no cover
     from mcp.server.fastmcp import FastMCP as _Server
 
-mcp = _Server("inner-voice")
+# 握手注入：MCP initialize 的 instructions 字段会被支持它的客户端
+# （Claude Desktop / Cursor / Trae 等）拼进系统提示词——这是服务器唯一能
+# "主动教模型怎么用自己"的协议级通道，比等模型自己翻工具列表可靠得多。
+INSTRUCTIONS = (
+    "【强制承诺协议 - inner-voice】\n"
+    "1. 说\"我会做X/马上修/待会儿补\"即构成承诺：立即 make_promise "
+    "落账并设核查时限。\n"
+    "2. 说\"做完了/已修复\"必须先 fulfill_promise 附证据"
+    "（命令输出/测试结果/产物路径）；空证据会被拒绝，"
+    "禁止绕过它直接宣称完成。\n"
+    "3. 交接或搁置工作时 set_task_reminder / set_alarm，"
+    "不依赖下个会话\"碰巧记得\"。\n"
+    "4. 重要节点（开工/提交/收尾）过 check_gate 自查质问；"
+    "inbox 有未答 ping 必须 answer，不答会升级萦绕。"
+)
+
+mcp = _Server("inner-voice", instructions=INSTRUCTIONS)
 
 
 # ===================== 登记：写给未来自己的话 =====================
