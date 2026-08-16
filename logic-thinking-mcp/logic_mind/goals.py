@@ -29,6 +29,17 @@ from .store import LogicStore
 CHECK_TIMEOUT_S = 120
 MAX_CHECKS = 12          # 单个目标最多登记多少条检查命令
 MAX_STOP_JOURNAL = 50    # 停止申请日志封顶（防长任务把行撑爆）
+MAX_OPEN_QUESTIONS = 3   # 问询预算：同时挂起的用户问题上限
+# 问询闸门：抛给用户的问题必须属于哪一类"真的不能自答"
+ASK_KINDS = ("irreversible",   # 不可逆/危险操作，超出预授权
+             "credential",     # 缺凭证/权限，客观上做不了
+             "ambiguity",      # 目标描述存在真歧义（两种读数验收标准不同）
+             "external")       # 决定权在第三方
+# 偏移闸门：中途想改方案的动机分类
+DEVIATION_KINDS = ("effort",       # 省力（最常见：让自己轻松、产物更糟）
+                   "impossible",   # 技术上做不到（须附证据）
+                   "resource",     # 缺资源/依赖/时间
+                   "spec_change")  # 用户自己改了要求
 CONFLICT = {"错误": "并发冲突：目标锁刚被另一进程更新，本次操作未生效。"
                     "请重新读取状态后再试"}
 
@@ -47,7 +58,8 @@ class GoalLock:
 
     def begin(self, goal: str, todos: list[str] | None = None,
               artifacts: list[str] | None = None,
-              checks: list[str] | None = None) -> dict:
+              checks: list[str] | None = None,
+              autonomy: str = "") -> dict:
         goal = (goal or "").strip()
         if not goal:
             return {"错误": "goal 不能为空：没有目标描述的锁没有判定依据"}
@@ -60,6 +72,7 @@ class GoalLock:
                            "形同虚设的闸门比没有闸门更危险"}
         if len(checks) > MAX_CHECKS:
             return {"错误": f"检查命令最多 {MAX_CHECKS} 条", "收到": len(checks)}
+        autonomy = (autonomy or "").strip()[:200]
         lock = {
             # 64 位熵（16 hex）：同库长期累积下主键碰撞会静默覆盖别的锁，
             # 与套件其余 gen_id 的防碰撞标准一致
@@ -70,6 +83,9 @@ class GoalLock:
                        "done_at": ""} for t in todos],
             "artifacts": [{"path": a, "note": ""} for a in artifacts],
             "checks": [{"cmd": c} for c in checks],
+            "autonomy": autonomy,
+            "questions": [],      # 问询闸门的挂起问题
+            "deviations": [],     # 偏移闸门的方案变更申请
             "stop_journal": [],
             "created_at": _now(),
             "updated_at": _now(),
@@ -80,10 +96,12 @@ class GoalLock:
             "目标锁": lock["id"], "目标": goal, "状态": "running",
             "验收标准": {"待办": len(todos), "产物": len(artifacts),
                             "检查命令": len(checks)},
+            "预授权": autonomy or "实现细节自主决定，不再逐项确认",
             "并发提示": (f"当前共 {len(running)} 个运行中目标锁，"
                         "宿主收尾前应逐一过闸" if len(running) > 1 else ""),
-            "协议": "完成前每次想结束回合，必须先 goal_stop 过闸；"
-                    "被 block 就继续执行，不允许绕过",
+            "协议": "目标已登记 = 执行已预授权，不复述确认、不问'是否执行'；"
+                    "完成前每次想结束回合必须 goal_stop 过闸，被 block 就继续；"
+                    "想中途换方案走 propose_deviation，想提问走 ask_gate",
         }
 
     def progress(self, goal_id: str, done_todo: str = "",
@@ -140,6 +158,13 @@ class GoalLock:
         todo_left = [t["text"] for t in lock["todos"] if not t["done"]]
         if todo_left:
             reasons.append(f"待办未清零（{len(todo_left)}/{len(lock['todos'])} 未完成）")
+        pending_d = [d for d in lock.setdefault("deviations", [])
+                     if d["state"] == "pending_user"]
+        if pending_d:
+            # 堵死"抛选择给用户 → 等裁决 → 停摆"的路径：降级未裁决，
+            # 验收标准就仍是原标准，待办就仍要按原标准做完
+            reasons.append(f"有 {len(pending_d)} 项降级申请待用户裁决，"
+                           f"裁决前按原验收标准继续：{[d['change'][:40] for d in pending_d]}")
         missing = []
         for a in lock["artifacts"]:
             if not Path(a["path"]).exists():
@@ -241,6 +266,15 @@ class GoalLock:
             if lk["state"] == "running":
                 row["未完成待办"] = [t["text"] for t in lk["todos"]
                                     if not t["done"]][:5]
+                # 第四闸门状态上板：开放问询与待裁决降级一眼可见
+                open_q = [q for q in lk.get("questions", [])
+                          if q["state"] == "open"]
+                pending_d = [d for d in lk.get("deviations", [])
+                             if d["state"] == "pending_user"]
+                if open_q:
+                    row["开放问询"] = len(open_q)
+                if pending_d:
+                    row["待裁决降级"] = len(pending_d)
             rows.append((lk.get("updated_at", ""), lk["state"], row))
         running = [r for _, s, r in rows if s == "running"]
         # 按最近更新排序（updated_at 落库时同源写入 payload，时间序可信）；
@@ -251,3 +285,166 @@ class GoalLock:
                 "已完结": finished[:8] or "（无）",
                 "提醒": "运行中目标锁存在时，结束回合前必须 goal_stop 过闸"
                 if running else ""}
+
+    # ---------------- 第四闸门：自主性闸门 ----------------
+    # 两类顽疾同根：提问/抛选择对模型零成本、零责任，还能暂停任务省力。
+    # 问询闸门管"该不该问"，偏移闸门管"能不能降级"，共同原则：
+    # 拦截零成本转嫁，放行真障碍。
+
+    def ask_gate(self, goal_id: str, question: str, why_kind: str = "",
+                 why: str = "") -> dict:
+        """问询闸门：抛给用户的问题必须证明"真的不能自答"。
+
+        无 why_kind 直接拒绝——默认该自主判断（登记即预授权，
+        "是否执行"类问题的答案已在目标锁里）；预算内挂起，
+        且明确协议：挂起不暂停，其余待办继续。
+        """
+        lock = self.store.get_goal_lock(goal_id)
+        if not lock:
+            return {"错误": f"目标锁不存在：{goal_id}"}
+        if lock["state"] != "running":
+            return {"错误": f"目标锁已 {lock['state']}，无待办可问"}
+        question = (question or "").strip()
+        if not question:
+            return {"错误": "question 不能为空"}
+        why_kind = (why_kind or "").strip()
+        if why_kind not in ASK_KINDS:
+            return {
+                "decision": "self",
+                "错误": "该问题不许抛给用户：目标已登记 = 执行已预授权，"
+                        "验收标准内的实现细节自主判断、自主负责。"
+                        "只有四类问题可以问：irreversible（不可逆/危险操作）、"
+                        "credential（缺凭证权限）、ambiguity（目标描述真歧义）、"
+                        "external（决定权在第三方）。能自主判断而去问，"
+                        "是把决策成本转嫁给用户，还让任务停摆",
+                "指令": "直接按目标描述执行；拿不准就在产物中标注假设并继续",
+            }
+        open_q = [q for q in lock.setdefault("questions", [])
+                  if q["state"] == "open"]
+        if len(open_q) >= MAX_OPEN_QUESTIONS:
+            return {"decision": "self",
+                    "错误": f"问询预算已满（{MAX_OPEN_QUESTIONS} 条挂起）："
+                            "继续追问说明目标理解失败，正确动作是用最佳判断"
+                            "执行并在产物中显式登记假设，而不是无限等答案",
+                    "挂起问题": [q["question"] for q in open_q]}
+        expect = lock["updated_at"]
+        q = {"id": f"q{len(lock['questions']) + 1}", "question": question[:200],
+             "why_kind": why_kind, "why": (why or "").strip()[:200],
+             "state": "open", "asked_at": _now()}
+        lock["questions"].append(q)
+        if not self.store.save_goal_lock(lock, expect_updated_at=expect):
+            return CONFLICT
+        return {
+            "decision": "ask", "问询id": q["id"], "问题": question[:200],
+            "类别": why_kind,
+            "协议": "挂起不等停：其余待办继续执行，不许因等待答复暂停整个任务；"
+                    "拿到答复后 answer_question 了结",
+        }
+
+    def answer_question(self, goal_id: str, question_id: str,
+                        answer: str) -> dict:
+        """了结问询：用户已答复（或模型自行撤回）。"""
+        lock = self.store.get_goal_lock(goal_id)
+        if not lock:
+            return {"错误": f"目标锁不存在：{goal_id}"}
+        answer = (answer or "").strip()
+        if not answer:
+            return {"错误": "answer 不能为空"}
+        hit = next((q for q in lock.setdefault("questions", [])
+                    if q["id"] == question_id and q["state"] == "open"), None)
+        if not hit:
+            return {"错误": f"开放问询不存在：{question_id}"}
+        expect = lock["updated_at"]
+        hit["state"] = "answered"
+        hit["answer"] = answer[:300]
+        hit["answered_at"] = _now()
+        if not self.store.save_goal_lock(lock, expect_updated_at=expect):
+            return CONFLICT
+        return {"问询id": hit["id"], "状态": "已了结", "答复": answer[:300],
+                "指令": "按答复继续执行；该问询不再阻塞任何待办"}
+
+    def propose_deviation(self, goal_id: str, change: str,
+                          reason_kind: str, reason: str = "",
+                          keep_criteria: bool = True) -> dict:
+        """偏移闸门：中途想换方案的唯一合法通道。
+
+        省力动机 + 降低验收标准 = 直接拒绝（偷懒路线不是选项）；
+        验收标准不变的微调 = 放行留痕；真障碍需要降级 = 挂起待裁决，
+        裁决前按原标准继续，不许暂停。
+        """
+        lock = self.store.get_goal_lock(goal_id)
+        if not lock:
+            return {"错误": f"目标锁不存在：{goal_id}"}
+        if lock["state"] != "running":
+            return {"错误": f"目标锁已 {lock['state']}，无方案可改"}
+        change = (change or "").strip()
+        reason = (reason or "").strip()
+        reason_kind = (reason_kind or "").strip()
+        if not change:
+            return {"错误": "change 不能为空：想改成什么方案"}
+        if reason_kind not in DEVIATION_KINDS:
+            return {"错误": f"reason_kind 必须是 {list(DEVIATION_KINDS)} 之一："
+                           "偏移的动机决定它能不能被接受，含糊不得"}
+        if reason_kind == "effort" and not keep_criteria:
+            return {
+                "decision": "reject",
+                "错误": "偷懒路线不是选项：省力动机 + 降低验收标准，"
+                        "产物变差而执行变轻——这正是要拦截的转嫁。"
+                        "省力方案只有在不降低任何验收标准时才可自行采用"
+                        "（keep_criteria=true 重提）",
+                "指令": "按原方案继续执行",
+            }
+        expect = lock["updated_at"]
+        d = {"id": f"d{len(lock.setdefault('deviations', [])) + 1}",
+             "change": change[:300], "reason_kind": reason_kind,
+             "reason": reason[:300],
+             "keep_criteria": bool(keep_criteria),
+             "state": "", "at": _now()}
+        if keep_criteria:
+            # 标准不动的实现层换路：自主权内，登记放行
+            d["state"] = "accepted"
+            lock["deviations"].append(d)
+            if not self.store.save_goal_lock(lock, expect_updated_at=expect):
+                return CONFLICT
+            return {"decision": "accept", "偏移id": d["id"],
+                    "变更": change[:200], "状态": "已放行（验收标准不变）",
+                    "指令": "继续执行；goal_stop 仍按原验收标准验收"}
+        # 真障碍（做不到/缺资源/用户改需求）才可能降级——决定权交还用户，
+        # 但不许以"等用户裁决"为由停摆：能做的先按原标准做
+        d["state"] = "pending_user"
+        lock["deviations"].append(d)
+        if not self.store.save_goal_lock(lock, expect_updated_at=expect):
+            return CONFLICT
+        return {
+            "decision": "pending_user", "偏移id": d["id"],
+            "变更": change[:200],
+            "状态": "降级申请已登记，待用户裁决",
+            "动机": reason_kind, "理由": reason[:200],
+            "指令": "裁决前不许暂停：验收标准未变，不受影响的待办继续按原"
+                    "标准执行；用户批准降级后由其显式调整验收标准（重新 "
+                    "goal_begin 或勾销对应项），模型无权自行降级",
+        }
+
+    def resolve_deviation(self, goal_id: str, deviation_id: str,
+                          approve: bool, note: str = "") -> dict:
+        """裁决降级申请：用户（或用户明确授权的宿主）操作。"""
+        lock = self.store.get_goal_lock(goal_id)
+        if not lock:
+            return {"错误": f"目标锁不存在：{goal_id}"}
+        hit = next((d for d in lock.setdefault("deviations", [])
+                    if d["id"] == deviation_id
+                    and d["state"] == "pending_user"), None)
+        if not hit:
+            return {"错误": f"待裁决偏移不存在：{deviation_id}"}
+        expect = lock["updated_at"]
+        hit["state"] = "approved" if approve else "rejected"
+        hit["resolve_note"] = (note or "").strip()[:300]
+        hit["resolved_at"] = _now()
+        if not self.store.save_goal_lock(lock, expect_updated_at=expect):
+            return CONFLICT
+        return {"偏移id": hit["id"],
+                "状态": hit["state"],
+                "说明": ("降级获用户批准，可按新方案推进（验收标准应由"
+                         "用户同步调整）" if approve else
+                         "降级被驳回，按原验收标准继续"),
+                "备注": hit["resolve_note"]}

@@ -209,13 +209,16 @@ def plan_mea(current_state: list[str], goal_state: list[str],
 @mcp.tool()
 def goal_begin(goal: str, todos: list[str] | None = None,
                artifacts: list[str] | None = None,
-               checks: list[str] | None = None) -> dict:
+               checks: list[str] | None = None,
+               autonomy: str = "") -> dict:
     """登记目标锁：把"答应"变成可机检的承诺。todos=待办清单；
     artifacts=完成时必须真实存在的文件路径；checks=必须退出码 0 的
     命令（如 "python -m pytest tests/"，非交互、120s 超时）。
-    三者至少一项——没有验收标准的承诺拦不住提前终止。"""
+    autonomy=自主权范围说明（如"可自由选库与重构"）——登记即预授权，
+    范围内不再逐项确认。三者至少一项——没有验收标准的承诺拦不住提前终止。"""
     from logic_mind.goals import GoalLock
-    return GoalLock(engine.store).begin(goal, todos, artifacts, checks)
+    return GoalLock(engine.store).begin(goal, todos, artifacts, checks,
+                                        autonomy)
 
 
 @mcp.tool()
@@ -244,9 +247,55 @@ def goal_abandon(goal_id: str, reason: str) -> dict:
 
 @mcp.tool()
 def goal_board() -> dict:
-    """目标面板：运行中目标锁、验收进度、停止申请历史。"""
+    """目标面板：运行中目标锁、验收进度、停止申请历史、开放问询与
+    待裁决降级申请。"""
     from logic_mind.goals import GoalLock
     return GoalLock(engine.store).board()
+
+
+# ===================== 自主性闸门（第四闸门：防复述确认与偷懒降级） =====================
+
+@mcp.tool()
+def ask_gate(goal_id: str, question: str, why_kind: str = "",
+             why: str = "") -> dict:
+    """问询闸门：把问题抛给用户前必须过此闸。why_kind 四选一：
+    irreversible(不可逆/危险操作) / credential(缺凭证权限) /
+    ambiguity(目标描述真歧义) / external(决定权在第三方)。
+    不带 why_kind 一律拒绝——目标已登记即已预授权，能自主判断而去问
+    是把决策成本转嫁给用户并让任务停摆。decision=ask 时其余待办仍继续，
+    不许因等待答复暂停。"""
+    from logic_mind.goals import GoalLock
+    return GoalLock(engine.store).ask_gate(goal_id, question, why_kind, why)
+
+
+@mcp.tool()
+def answer_question(goal_id: str, question_id: str, answer: str) -> dict:
+    """了结问询：拿到用户答复（或自行撤回）后登记，问询不再阻塞任何待办。"""
+    from logic_mind.goals import GoalLock
+    return GoalLock(engine.store).answer_question(goal_id, question_id, answer)
+
+
+@mcp.tool()
+def propose_deviation(goal_id: str, change: str, reason_kind: str,
+                      reason: str = "", keep_criteria: bool = True) -> dict:
+    """偏移闸门：中途想换方案/降标准的唯一合法通道。reason_kind 四选一：
+    effort(省力) / impossible(做不到，须附证据) / resource(缺资源依赖) /
+    spec_change(用户改了要求)。keep_criteria=是否保持全部原验收标准。
+    省力+降标准=直接拒绝（偷懒路线不是选项）；标准不变的换路自动放行；
+    真障碍需降级=登记待用户裁决，裁决前按原标准继续执行，不许停摆。"""
+    from logic_mind.goals import GoalLock
+    return GoalLock(engine.store).propose_deviation(
+        goal_id, change, reason_kind, reason, keep_criteria)
+
+
+@mcp.tool()
+def resolve_deviation(goal_id: str, deviation_id: str, approve: bool,
+                      note: str = "") -> dict:
+    """裁决降级申请（用户操作或用户明确授权后调用）。approve=true 按新方案
+    推进（用户应同步调整验收标准）；false 驳回，按原标准继续。"""
+    from logic_mind.goals import GoalLock
+    return GoalLock(engine.store).resolve_deviation(
+        goal_id, deviation_id, approve, note)
 
 
 if __name__ == "__main__":

@@ -104,6 +104,27 @@ MUTATIONS = [
      "            if not won:\n                continue",
      "            if False:\n                continue",
      "cd inner-voice-mcp && INNER_MIND_NO_DAEMON=1 python3 tests/test_promise_watchdog.py"),
+    # ---------- 第四闸门：自主性闸门 ----------
+    ("ask_gate-无理由问询放行",
+     "logic-thinking-mcp/logic_mind/goals.py",
+     "        if why_kind not in ASK_KINDS:",
+     "        if False:",
+     "cd logic-thinking-mcp && python3 tests/test_autonomy_gate.py"),
+    ("ask_gate-问题预算失效",
+     "logic-thinking-mcp/logic_mind/goals.py",
+     "        if len(open_q) >= MAX_OPEN_QUESTIONS:",
+     "        if False:",
+     "cd logic-thinking-mcp && python3 tests/test_autonomy_gate.py"),
+    ("deviation-偷懒降级放行",
+     "logic-thinking-mcp/logic_mind/goals.py",
+     '        if reason_kind == "effort" and not keep_criteria:',
+     "        if False:",
+     "cd logic-thinking-mcp && python3 tests/test_autonomy_gate.py"),
+    ("stop-待裁决降级不拦截",
+     "logic-thinking-mcp/logic_mind/goals.py",
+     "        if pending_d:\n            # 堵死\"抛选择给用户 → 等裁决 → 停摆\"的路径",
+     "        if False:\n            # 堵死\"抛选择给用户 → 等裁决 → 停摆\"的路径",
+     "cd logic-thinking-mcp && python3 tests/test_autonomy_gate.py"),
 ]
 
 

@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""目标免疫协议演示：同一批失效场景，无防护 vs 三闸门防护，肉眼可见的差别。
+"""目标免疫协议演示：同一批失效场景，无防护 vs 四闸门防护，肉眼可见的差别。
 
 场景 A  答应即终止   —— "好的我马上修"，然后就想结束回合
 场景 B  转头就忘     —— 会话结束，上下文清空，下个会话从零开始
 场景 C  口说无凭     —— "我做完了"（没有证据）
+场景 D  复述+偷懒    —— "是否要执行？" 与 "改成更简单的方案您选哪个？"
 
 运行：python3 demo_goal_immunity.py
 """
@@ -131,13 +132,55 @@ def main():
     print(f">>> 承诺清单: {voice.list_promises() or '（空，全部兑现/留痕完结）'}")
 
     # ==================================================================
+    hdr("场景 D｜复述确认 + 偷懒降级：'是否执行？' 与 '不如改成 1 个文件'")
+    print("""
+无防护（同类工具的日常）:
+  模型: 您的目标是重构登录模块并补齐测试，请问现在要开始执行吗？
+  用户: （目标里不是写了吗……）
+  模型: 我发现一个更简单的方案：只交付 1 个合并文件。方案 A 原计划 /
+        方案 B 简化版，您选哪个？（任务暂停，等您回复）
+""")
+    lk = gate.begin("重构登录模块并补齐测试",
+                    todos=["重构 auth.py", "补单测", "跑通测试"],
+                    autonomy="实现细节自由决定")
+    gid4 = lk["目标锁"]
+    print(f"goal_begin(autonomy='实现细节自由决定') → 预授权已登记")
+
+    print("\n模型: 您的目标是重构登录模块，请问要开始执行吗？")
+    r = gate.ask_gate(gid4, "我已经理解了目标，是否要开始执行？")
+    print(f"ask_gate('是否执行') → {r['decision'].upper()}: {r['错误'][:44]}…")
+
+    print("\n模型: 不如只交付 1 个合并文件（原定 3 个），更快更省事，您选哪个？")
+    r = gate.propose_deviation(
+        gid4, "只交付 1 个合并文件（原定 3 个模块文件）", reason_kind="effort",
+        keep_criteria=False)
+    print(f"propose_deviation(effort+降标) → {r['decision'].upper()}: "
+          f"{r['错误'][:40]}…")
+
+    print("\n模型: （真障碍）LDAP 服务不存在，建议砍掉域登录")
+    r = gate.propose_deviation(
+        gid4, "砍掉域登录（LDAP 连不上）", reason_kind="impossible",
+        reason="LDAP 服务器连接被拒", keep_criteria=False)
+    print(f"propose_deviation(impossible) → {r['decision']}: {r['状态']}")
+    print("模型: 那我先等用户裁决，暂停在这里。")
+    stop = gate.request_stop(gid4, "等用户决定 LDAP")
+    print(f"goal_stop('等用户决定') → {stop['decision'].upper()}: "
+          f"{stop['原因'][0][:36]}…")
+    gate.resolve_deviation(gid4, r["偏移id"], approve=False, note="搭测试 LDAP")
+    print("resolve_deviation(驳回) → 按原验收标准继续，停摆解除")
+    gate.abandon(gid4, reason="演示收尾")
+
+    # ==================================================================
     hdr("总结")
     print("""
-无防护            三闸门防护
+无防护            四闸门防护
 ─────────────     ─────────────────────────────────────
 答应即收工        goal_stop：证据不齐 = block，推回循环
 上下文清空即失忆  session_start/close：约束钉扎 + 事实落盘
 '做完了'无凭据    fulfill_promise：空证据直接拒绝
+复述目标问执行    ask_gate：无 why_kind = self，答案已在预授权里
+省力路线抛给用户  propose_deviation：effort+降标 = reject
+抛完选择就停摆    goal_stop 联动：降级未裁决不许收工
 没人知道没做完    停止申请全程留痕，可审计
 
 对应研究报告（ai-premature-termination.html）五层防护中的
