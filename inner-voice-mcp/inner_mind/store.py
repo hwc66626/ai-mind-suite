@@ -302,6 +302,29 @@ class VoiceStore:
                 "SELECT * FROM pings WHERE id=?", (pid,)).fetchone()
         return self._row_to_ping(row)
 
+    def close_pings_of_voice(self, voice_id: int, answer: str, outcome: str,
+                             now: datetime) -> int:
+        """按 voice 批量了结全部未答叩门（承诺结算的完整性要求）。
+
+        fulfill/release 只遍历 open_pings(limit=INBOX_MAX) 会漏：承诺每
+        PROMISE_RENAG_MIN 分钟催办一条，隔夜未答轻松超 50 条上限，
+        而 open_pings 按 fired_at 升序只返回最旧的 50 条——结算后
+        更新的一批永远留在收件箱里（已兑现的承诺收件箱永远红着）。
+        结算必须按 voice_id 直击全部，不走展示队列。
+        """
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE pings SET answered_at=?, answer=?, outcome=? "
+                "WHERE voice_id=? AND answered_at=''",
+                (iso(now), answer[:200], outcome, voice_id))
+            n = cur.rowcount
+            if n:
+                self._conn.execute(
+                    "UPDATE voices SET answered_count=answered_count+?, "
+                    "last_answered_at=? WHERE id=?",
+                    (n, iso(now), voice_id))
+        return n
+
     def snooze_ping(self, pid: int, until: datetime) -> bool:
         with self._lock:
             cur = self._conn.execute(

@@ -28,6 +28,10 @@ DUPLICATE_SIM = 0.92
 # 单次沉淀条数上限：去重是逐条对全库嵌入扫描（O(n×m)），不设上限的话
 # 一次传千条事实能把收尾调用拖到分钟级——闸门式拒绝，提示分批
 MAX_FACTS = 40
+# 活跃钉扎条数上限：钉扎块不受 token 预算约束（约束必须无条件注入），
+# 不封顶的话钉 20 条 = 每次打包硬塞 ~4000 tok，budget=800 的契约被
+# 击穿——宁可登记时拒绝，也不让注入块无声膨胀
+MAX_PINS = 12
 
 
 def pin_constraint(brain, content: str, scope: str = "global",
@@ -43,6 +47,12 @@ def pin_constraint(brain, content: str, scope: str = "global",
         if p["content"] == content:
             return {"钉扎id": p["id"], "说明": "已存在同文约束，未重复钉扎",
                     "内容": content}
+    n_active = len(brain.store.list_pinned(active_only=True))
+    if n_active >= MAX_PINS:
+        return {"错误": f"活跃钉扎已达上限 {MAX_PINS} 条（现有 {n_active}）："
+                       "钉扎块不受 token 预算约束，继续加会击穿每次打包的"
+                       "预算契约。请先 unpin_constraint 停用不再需要的，"
+                       "或把相近约束合并成一条"}
     row = brain.store.add_pinned(content, scope, why)
     return {"钉扎id": row["id"], "内容": content, "作用域": row["scope"],
             "协议": "该约束将在每次 context_pack / session_start 注入块最顶部，"

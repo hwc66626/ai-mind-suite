@@ -138,12 +138,10 @@ class InnerVoice:
             return {"错误": "承诺兑现需要证据：命令输出摘要 / 产物路径 / "
                            "测试结果。空证据的'做完了'正是要拦截的对象"}
         now = datetime.now()
-        # 该承诺名下所有未答叩门一并了结（催办链终止）
-        closed = 0
-        for p in self.store.open_pings(now, limit=C.INBOX_MAX):
-            if p.voice_id == v.id:
-                self.store.answer_ping(p.id, evidence[:200], "done", now)
-                closed += 1
+        # 该承诺名下所有未答叩门一并了结（催办链终止）——按 voice_id
+        # 批量直击，不走 open_pings 的展示上限（隔夜催办可超上限）
+        closed = self.store.close_pings_of_voice(
+            v.id, evidence[:200], "done", now)
         self.store.update_voice_fields(v.id, active=0)
         memo = ""
         try:
@@ -167,12 +165,8 @@ class InnerVoice:
         if not reason:
             return {"错误": "放弃承诺必须说明原因——无因放弃等于把承诺当空气"}
         now = datetime.now()
-        closed = 0
-        for p in self.store.open_pings(now, limit=C.INBOX_MAX):
-            if p.voice_id == v.id:
-                self.store.answer_ping(p.id, f"放弃：{reason[:150]}",
-                                       "dismissed", now)
-                closed += 1
+        closed = self.store.close_pings_of_voice(
+            v.id, f"放弃：{reason[:150]}", "dismissed", now)
         self.store.update_voice_fields(v.id, active=0)
         return {"承诺id": v.id, "承诺": v.text[:60], "状态": "已放弃",
                 "原因": reason[:150], "了结催办": closed}

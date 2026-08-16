@@ -106,6 +106,29 @@ def main():
     check("一次性闹钟响后停用",
           v.store.list_voices(active_only=True, kind="alarm") == [])
 
+    print("[9] 隔夜催办超展示上限后兑现：收件箱必须清空（僵尸叩门）")
+    r = v.make_promise("隔夜未兑现的承诺", deadline_minutes=1)
+    pid3 = r["承诺id"]
+    # 模拟隔夜：每 PROMISE_RENAG_MIN 分钟被催办一轮，60 轮 > INBOX_MAX(50)
+    t = datetime.now()
+    for _ in range(60):
+        t += timedelta(minutes=C.PROMISE_RENAG_MIN)
+        daemon.run_tick(t)
+    n_open = v.store._conn.execute(
+        "SELECT COUNT(*) AS c FROM pings WHERE voice_id=? AND answered_at=''",
+        (pid3,)).fetchone()["c"]
+    check("未答叩门积压 60 条（远超收件箱每页 20）", n_open == 60, n_open)
+    r = v.fulfill_promise(pid3, "隔夜后补齐证据：全部 60 条一次性了结")
+    check("了结全部 60 条（不只首页展示的那 20）", r.get("了结催办") == 60,
+          str(r)[:100])
+    n_open = v.store._conn.execute(
+        "SELECT COUNT(*) AS c FROM pings WHERE voice_id=? AND answered_at=''",
+        (pid3,)).fetchone()["c"]
+    check("该承诺名下未答叩门清零（无僵尸）", n_open == 0, n_open)
+    check("收件箱不再有任何承诺叩门",
+          all(p["来源"] != "promise" for p in v.inbox()["未答叩门"]),
+          str(v.inbox())[:100])
+
     print(f"\n结果：{PASS} 通过 / {FAIL} 失败")
     sys.exit(1 if FAIL else 0)
 

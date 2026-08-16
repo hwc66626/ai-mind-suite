@@ -100,6 +100,18 @@ def main():
     check("恰在上限内通过", "错误" not in r and len(r["写入"]) == 40,
           str(r.get("写入"))[:60])
 
+    print("[9] 钉扎条数上限：预算契约不被击穿")
+    from brain_memory.protocol import MAX_PINS
+    n0 = len(list_pinned(b))          # [7] 停用一条后剩 1 条活跃
+    for i in range(MAX_PINS - n0):
+        pin_constraint(b, f"操作规范 {i}：第 {i} 号流程必须走检查单")
+    check(f"补齐到 {MAX_PINS} 条活跃", len(list_pinned(b)) == MAX_PINS)
+    r = pin_constraint(b, "多出来的第 13 条约束")
+    check("超上限被拒", "错误" in r and "上限" in r["错误"], str(r)[:80])
+    unpin_constraint(b, list_pinned(b)[-1]["id"])
+    r = pin_constraint(b, "停用腾位后重新钉扎")
+    check("腾位后可再钉", "钉扎id" in r, str(r)[:80])
+
     print(f"\n结果：{PASS} 通过 / {FAIL} 失败")
     sys.exit(1 if FAIL else 0)
 
