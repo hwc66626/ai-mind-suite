@@ -90,6 +90,16 @@ def main():
           str(first)[:80])
     check("其余约束仍在", "DROP" in first.get("内容", ""))
 
+    print("[8] 条数闸门：单次沉淀超量整体拒绝（防去重扫描被拖垮）")
+    flood = [f"洪水事实第 {i} 条，内容互不相同 {i}" for i in range(41)]
+    r = session_close(b, facts=flood)
+    check("41 条被拒绝", "错误" in r and "41" in r["错误"], str(r)[:80])
+    n_before = len(b.store.list_memories(status="normal"))
+    check("拒绝时一条都不写（闸门先于写入）", n_before == 2, n_before)
+    r = session_close(b, facts=flood[:40])
+    check("恰在上限内通过", "错误" not in r and len(r["写入"]) == 40,
+          str(r.get("写入"))[:60])
+
     print(f"\n结果：{PASS} 通过 / {FAIL} 失败")
     sys.exit(1 if FAIL else 0)
 

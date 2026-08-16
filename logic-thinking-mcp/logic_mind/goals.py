@@ -21,6 +21,7 @@ import secrets
 import shlex
 import subprocess
 from datetime import datetime, timezone
+from pathlib import Path
 
 from .store import LogicStore
 
@@ -28,6 +29,8 @@ from .store import LogicStore
 CHECK_TIMEOUT_S = 120
 MAX_CHECKS = 12          # 单个目标最多登记多少条检查命令
 MAX_STOP_JOURNAL = 50    # 停止申请日志封顶（防长任务把行撑爆）
+CONFLICT = {"错误": "并发冲突：目标锁刚被另一进程更新，本次操作未生效。"
+                    "请重新读取状态后再试"}
 
 
 def _now() -> str:
@@ -58,7 +61,9 @@ class GoalLock:
         if len(checks) > MAX_CHECKS:
             return {"错误": f"检查命令最多 {MAX_CHECKS} 条", "收到": len(checks)}
         lock = {
-            "id": "goal-" + secrets.token_hex(4),
+            # 64 位熵（16 hex）：同库长期累积下主键碰撞会静默覆盖别的锁，
+            # 与套件其余 gen_id 的防碰撞标准一致
+            "id": "goal-" + secrets.token_hex(8),
             "goal": goal,
             "state": "running",
             "todos": [{"text": t, "done": False, "evidence": "",
@@ -105,6 +110,7 @@ class GoalLock:
             return {"错误": "未找到该待办（可能已完成或不存在）",
                     "未完成待办": [t["text"] for t in lock["todos"]
                                       if not t["done"]]}
+        expect = lock["updated_at"]
         t = lock["todos"][hit]
         t["done"] = True
         t["evidence"] = (evidence or "").strip()[:200]
@@ -114,7 +120,8 @@ class GoalLock:
             # goal_stop 的拦截力来自机器检查，这里只保证可审计
             t["evidence"] = "（无证据）"
         lock["updated_at"] = _now()
-        self.store.save_goal_lock(lock)
+        if not self.store.save_goal_lock(lock, expect_updated_at=expect):
+            return CONFLICT
         left = [x["text"] for x in lock["todos"] if not x["done"]]
         return {"目标锁": goal_id, "已完成待办": t["text"],
                 "剩余待办": len(left), "进度": f"{len(lock['todos'])-len(left)}/{len(lock['todos'])}"}
@@ -135,7 +142,6 @@ class GoalLock:
             reasons.append(f"待办未清零（{len(todo_left)}/{len(lock['todos'])} 未完成）")
         missing = []
         for a in lock["artifacts"]:
-            from pathlib import Path
             if not Path(a["path"]).exists():
                 missing.append(a["path"])
         if missing:
@@ -149,14 +155,17 @@ class GoalLock:
         if failed_checks:
             reasons.append(f"检查命令未通过：{[f['命令'] for f in failed_checks]}")
 
-        entry = {"at": _now(), "decision": "", "final_message":
-                 (final_message or "")[:200]}
+        # 检查命令可能跑数分钟：读-改-写窗口长，落库前必须过 CAS，
+        # 否则会把窗口期内另一进程推进的待办状态整包覆盖回去
+        expect = lock["updated_at"]
+        entry = {"at": _now(), "decision": "",
+                 "final_message": (final_message or "")[:200]}
         if reasons:
             entry["decision"] = "block"
             entry["failed"] = reasons
             lock["stop_journal"] = (lock["stop_journal"] + [entry])[-MAX_STOP_JOURNAL:]
-            lock["updated_at"] = _now()
-            self.store.save_goal_lock(lock)
+            if not self.store.save_goal_lock(lock, expect_updated_at=expect):
+                return CONFLICT
             return {
                 "decision": "block",
                 "原因": reasons,
@@ -169,8 +178,8 @@ class GoalLock:
         lock["state"] = "done"
         entry["decision"] = "approve"
         lock["stop_journal"] = (lock["stop_journal"] + [entry])[-MAX_STOP_JOURNAL:]
-        lock["updated_at"] = _now()
-        self.store.save_goal_lock(lock)
+        if not self.store.save_goal_lock(lock, expect_updated_at=expect):
+            return CONFLICT
         return {
             "decision": "approve", "停止原因": "completed",
             "目标": lock["goal"],
@@ -214,14 +223,15 @@ class GoalLock:
             return {"错误": f"目标锁不存在：{goal_id}"}
         if lock["state"] != "running":
             return {"错误": f"目标已 {lock['state']}"}
+        expect = lock["updated_at"]
         lock["state"] = "abandoned"
         lock["abandon_reason"] = reason[:300]
-        lock["updated_at"] = _now()
-        self.store.save_goal_lock(lock)
+        if not self.store.save_goal_lock(lock, expect_updated_at=expect):
+            return CONFLICT
         return {"目标锁": goal_id, "状态": "abandoned", "放弃原因": reason[:300]}
 
     def board(self) -> dict:
-        running, finished = [], []
+        rows = []
         for lk in self.store.list_goal_locks():
             total = len(lk["todos"])
             done = sum(1 for t in lk["todos"] if t["done"])
@@ -229,11 +239,14 @@ class GoalLock:
                    "待办进度": f"{done}/{total}" if total else "-",
                    "停止申请": len(lk["stop_journal"])}
             if lk["state"] == "running":
-                row["未完成待办"] = [t["text"] for t in lk["todos"] if not t["done"]][:5]
-                running.append(row)
-            else:
-                finished.append(row)
-        finished.sort(key=lambda r: r["目标锁"], reverse=True)
+                row["未完成待办"] = [t["text"] for t in lk["todos"]
+                                    if not t["done"]][:5]
+            rows.append((lk.get("updated_at", ""), lk["state"], row))
+        running = [r for _, s, r in rows if s == "running"]
+        # 按最近更新排序（updated_at 落库时同源写入 payload，时间序可信）；
+        # 早前按 id 排是随机 hex 序，无信息量
+        finished = [r for _, s, r in sorted(
+            rows, key=lambda x: x[0], reverse=True) if s != "running"]
         return {"运行中": running or "（无）",
                 "已完结": finished[:8] or "（无）",
                 "提醒": "运行中目标锁存在时，结束回合前必须 goal_stop 过闸"

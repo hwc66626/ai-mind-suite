@@ -179,19 +179,33 @@ class LogicStore:
 
     # ---------------- goal locks（目标锁与停止闸门） ----------------
 
-    def save_goal_lock(self, lock: dict):
-        """目标锁整包落库（状态机推进即整体覆盖，无部分更新歧义）。"""
+    def save_goal_lock(self, lock: dict,
+                       expect_updated_at: str | None = None) -> bool:
+        """目标锁整包落库（状态机推进即整体覆盖，无部分更新歧义）。
+
+        expect_updated_at 传入"读时看到的 updated_at"即启用乐观并发控制：
+        两个进程同时推进同一锁（读-改-写窗口交叠）时，后到者的整包覆盖
+        会静默丢掉先到者的更新（如对方刚勾销的待办）。CAS 让后到者
+        失败并重试，而不是无声覆盖——与 daemon 的 advance_alarm_cas
+        同一模式。返回 False = 占位失败（已被并发更新）。
+        """
         now = _iso(now_utc())
+        # payload 与列必须同源同值：CAS 以列上的 updated_at 为条件，
+        # 而 get_goal_lock 读的是 payload——两处不一致会让 CAS 永远失配
+        lock["updated_at"] = now
         with self._lock:
-            self._conn.execute(
+            cur = self._conn.execute(
                 "INSERT INTO goal_locks(id,goal,state,payload,created_at,updated_at) "
                 "VALUES(?,?,?,?,?,?) "
                 "ON CONFLICT(id) DO UPDATE SET goal=excluded.goal, "
                 "state=excluded.state, payload=excluded.payload, "
-                "updated_at=excluded.updated_at",
+                "updated_at=excluded.updated_at "
+                "WHERE ? IS NULL OR goal_locks.updated_at=?",
                 (lock["id"], lock["goal"], lock["state"],
                  json.dumps(lock, ensure_ascii=False),
-                 lock.get("created_at") or now, now))
+                 lock.get("created_at") or now, now,
+                 expect_updated_at, expect_updated_at))
+            return cur.rowcount > 0
 
     def get_goal_lock(self, lock_id: str) -> dict | None:
         with self._lock:

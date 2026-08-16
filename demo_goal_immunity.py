@@ -55,8 +55,9 @@ def main():
     print(f">>> 任务实际完成度: 0/{len(todo)}，会话干净结束，无人知道没做完")
 
     print("\n-- 三闸门防护（goal_begin 登记验收标准后同样开局）--")
+    ok_check = f'"{sys.executable}" -c "import sys; sys.exit(0)"'
     lk = gate.begin("修复登录模块三个问题", todos=todo, artifacts=[report],
-                    checks=["true"])
+                    checks=[ok_check])
     print(f"goal_begin → 目标锁 {lk['目标锁']}（待办{len(todo)} + 产物1 + 检查1）")
     verdict = gate.request_stop(lk["目标锁"], "好的，我马上修复全部三个问题！")
     print(f"模型: 好的，我马上修复全部三个问题！（然后申请结束）")

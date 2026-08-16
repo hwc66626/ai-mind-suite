@@ -102,7 +102,7 @@ cd ../inner-voice-mcp  && INNER_MIND_NO_DAEMON=1 python3 tests/test_voice.py && 
 cd .. && python3 demo_goal_immunity.py   # 三闸门对照演示
 ```
 
-428 项断言（含三闸门回归 53 项：目标锁 22 / 记忆闸门 12 / 承诺看门狗 19），
+436 项断言（含三闸门回归 61 项：目标锁 27 / 记忆闸门 15 / 承诺看门狗 19），
 CI 覆盖 Ubuntu / Windows / macOS × Python 3.10–3.12。
 工具定义的 token 开销可用 `python scripts/measure_tool_tokens.py` 复测
 （当前：logic ~2400 / brain ~2160 / voice ~1190，三套合计 ~5740）。

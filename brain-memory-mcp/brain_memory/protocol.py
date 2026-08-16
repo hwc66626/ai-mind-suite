@@ -25,6 +25,9 @@ from .embeddings import cosine, embed
 FACT_MAX_CHARS = 120
 # 与既有记忆的相似度超过该值视为重复，跳过写入
 DUPLICATE_SIM = 0.92
+# 单次沉淀条数上限：去重是逐条对全库嵌入扫描（O(n×m)），不设上限的话
+# 一次传千条事实能把收尾调用拖到分钟级——闸门式拒绝，提示分批
+MAX_FACTS = 40
 
 
 def pin_constraint(brain, content: str, scope: str = "global",
@@ -84,6 +87,11 @@ def session_close(brain, facts: list[str] | None = None,
     """
     facts = [f.strip() for f in (facts or []) if f and f.strip()]
     lessons = [f.strip() for f in (lessons or []) if f and f.strip()]
+    if len(facts) + len(lessons) > MAX_FACTS:
+        return {"错误": f"单次沉淀最多 {MAX_FACTS} 条（收到 "
+                       f"{len(facts) + len(lessons)}）：逐条对全库做相似度"
+                       "去重，超量会拖垮收尾。请挑本会话真正要留的，"
+                       "或分多次 session_close"}
     written, skipped_dupe, rejected = [], [], []
     existing = brain.store.list_memories(status="normal")
     existing_vecs = [(m.content, m.vec) for m in existing]

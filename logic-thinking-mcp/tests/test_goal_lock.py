@@ -22,6 +22,11 @@ from logic_mind.store import LogicStore        # noqa: E402
 PASS = 0
 FAIL = 0
 
+# 检查命令必须跨平台：CI 矩阵含 Windows，`true` 是 POSIX 命令、
+# `python3` 在 Windows 只有 `python`——用解释器绝对路径最稳
+OK_CHECK = f'"{sys.executable}" -c "import sys; sys.exit(0)"'
+FAIL_CHECK = f'"{sys.executable}" -c "import sys; sys.exit(3)"'
+
 
 def check(name: str, cond: bool, detail: str = ""):
     global PASS, FAIL
@@ -46,7 +51,7 @@ def main():
 
     print("[2] 答应即终止场景：只承诺不干活，停止申请被拦截")
     lk = g.begin("修复三个 bug 并出报告", todos=["修 A", "修 B", "写报告"],
-                 artifacts=[artifact], checks=["true"])
+                 artifacts=[artifact], checks=[OK_CHECK])
     gid = lk["目标锁"]
     r = g.request_stop(gid, final_message="好的，我马上全部修复！")
     check("decision=block", r["decision"] == "block", str(r)[:80])
@@ -77,7 +82,7 @@ def main():
     check("已完结含该锁", any(x["目标锁"] == gid for x in board["已完结"]))
 
     print("[6] 检查命令失败可拦截（伪命令退出码非 0）")
-    lk2 = g.begin("跑通测试", checks=["python3 -c \"import sys; sys.exit(3)\""])
+    lk2 = g.begin("跑通测试", checks=[FAIL_CHECK])
     r = g.request_stop(lk2["目标锁"])
     check("失败检查 block", r["decision"] == "block")
     check("给出退出码", "退出码 3" in r["未过检查"][0]["结果"],
@@ -110,6 +115,27 @@ def main():
     r = g.progress(lk4["目标锁"], "1")   # 序号推进
     check("序号推进成功", r.get("剩余待办") == 0)
     g.abandon(lk4["目标锁"], reason="测试收尾")
+
+    print("[10] 并发写丢失防护（CAS）：陈旧副本覆盖被拒")
+    lk5 = g.begin("并发测试", todos=["甲", "乙"])
+    gid5 = lk5["目标锁"]
+    check("目标锁 id 为 16 位 hex（64 位熵，防主键碰撞）",
+          len(gid5) == len("goal-") + 16, gid5)
+    stale = store.get_goal_lock(gid5)          # 进程 B 读到的旧副本
+    r = g.progress(gid5, "甲", evidence="先到者完成")
+    check("先到者推进成功", r.get("剩余待办") == 1)
+    # 进程 B 用旧副本整包覆盖：会把"甲已完成"抹掉——CAS 必须拒绝
+    stale["todos"][0]["done"] = False
+    won = store.save_goal_lock(stale, expect_updated_at=stale["updated_at"])
+    check("陈旧覆盖被 CAS 拒绝", won is False)
+    fresh = store.get_goal_lock(gid5)
+    check("先到者的进度未被抹掉", fresh["todos"][0]["done"] is True)
+    # payload 与列同源：CAS 的判定依据成立
+    col = store._conn.execute(
+        "SELECT updated_at FROM goal_locks WHERE id=?", (gid5,)).fetchone()
+    check("payload 与列 updated_at 同源同值",
+          fresh["updated_at"] == col["updated_at"])
+    g.abandon(gid5, reason="测试收尾")
 
     store.close()
     print(f"\n结果：{PASS} 通过 / {FAIL} 失败")
