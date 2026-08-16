@@ -195,7 +195,8 @@ def consolidate() -> dict:
 
 @mcp.tool()
 def forgetting_preview(limit: int = 10) -> list[dict]:
-    """哪些记忆即将滑入冷归档（不删除，只是默认不再想起）。"""
+    """哪些记忆即将滑入冷归档（不删除，只是默认不再想起）。
+    再次检索（成功回忆）可重置衰减并增大稳定性。"""
     return brain.forgetting_preview(limit)
 
 

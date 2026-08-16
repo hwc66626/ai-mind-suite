@@ -338,8 +338,13 @@ def test_persistence():
     fr = e.frame("持久化测试", "验证存档", risk_level="low")
     lst = e.list_traces(5)
     check("list_traces 可见", any(x["id"] == fr["trace_id"] for x in lst))
-    got = e.get_trace(fr["trace_id"])
+    got = e.get_trace(fr["trace_id"], detail="full")
     check("get_trace 完整视图", got.get("阶段_cn") == "已界定" and "注意力面板" in got)
+    idx = e.get_trace(fr["trace_id"])
+    check("get_trace 默认索引视图",
+          idx.get("阶段") == "已界定" and "consequences" not in str(idx.keys())
+          and idx.get("证据账本") == {"支持": 0, "攻击": 0, "封顶": False}
+          and "full" in idx.get("提示", ""))
 
 
 if __name__ == "__main__":

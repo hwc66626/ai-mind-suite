@@ -684,21 +684,60 @@ class LogicEngine:
     # ================================================================
     # 视图
     # ================================================================
-    def get_trace(self, trace_id: str) -> dict:
+    def get_trace(self, trace_id: str, detail: str = "index") -> dict:
+        """查看思考轨迹。detail="index"（默认）返回索引视图：阶段、注意力、
+        证明标准、账本计数、方案排名、决断结论——"这盘棋下到哪了"一眼可见；
+        后果树全量明细、证据流水、论证框架用 detail="full" 按需展开。
+        """
         t = self._load(trace_id)
         if isinstance(t, dict):
             return t
         std_key, std_val = ARG.required_standard(t.risk_level)
         p, capped, _ = ARG.ledger_posterior(t.evidence)
-        out = t.to_dict()
-        out["阶段_cn"] = STAGE_CN[t.stage]
-        out["风险_cn"] = RISK_CN[t.risk_level]
-        out["证明标准"] = {"所需": ARG.STD_CN[std_key], "当前后验": round(p, 3),
-                          "达标": p >= std_val}
-        out["注意力面板"] = t.attention.to_dict() | {"最大延伸深度": ATT.max_depth(t.attention)}
+
+        if detail == "full":
+            out = t.to_dict()
+            out["阶段_cn"] = STAGE_CN[t.stage]
+            out["风险_cn"] = RISK_CN[t.risk_level]
+            out["证明标准"] = {"所需": ARG.STD_CN[std_key], "当前后验": round(p, 3),
+                              "达标": p >= std_val}
+            out["注意力面板"] = t.attention.to_dict() | {"最大延伸深度": ATT.max_depth(t.attention)}
+            if t.stage in ("evaluated", "proved", "decided", "reviewed") and t.baseline_filled:
+                bd = [PT.evaluate_option(o, t.goal_alignment) for o in t.options.values()]
+                out["最新排序"] = PT.rank_with_regret(bd)
+            return out
+
+        # ---- 索引视图：棋局概览，明细按需展开 ----
+        goal = t.goal if len(t.goal) <= 60 else t.goal[:59] + "…"
+        out: dict = {
+            "id": t.id,
+            "阶段": STAGE_CN[t.stage],
+            "风险": RISK_CN[t.risk_level],
+            "目标": goal,
+            "注意力": {"剩余": round(t.attention.remaining, 1),
+                      "显著性": round(t.attention.salience, 3),
+                      "最大延伸深度": ATT.max_depth(t.attention)},
+            "证明标准": {"所需": ARG.STD_CN[std_key], "当前后验": round(p, 3),
+                          "达标": p >= std_val},
+            "证据账本": {"支持": sum(1 for e in t.evidence if e.polarity > 0),
+                          "攻击": sum(1 for e in t.evidence if e.polarity < 0),
+                          "封顶": t.ledger_capped or bool(capped)},
+            "后果节点数": {o.name: len(o.consequences) for o in t.options.values()},
+        }
         if t.stage in ("evaluated", "proved", "decided", "reviewed") and t.baseline_filled:
             bd = [PT.evaluate_option(o, t.goal_alignment) for o in t.options.values()]
-            out["最新排序"] = PT.rank_with_regret(bd)
+            out["方案排名"] = [{"排名": b["排名"], "方案": b["方案"],
+                                "总分": b["总分"],
+                                "预期后悔": b["预期后悔"]} for b in PT.rank_with_regret(bd)]
+        else:
+            out["方案"] = list(t.options.keys())
+        if t.decision is not None:
+            out["决断"] = {"类型": t.decision.decision_type,
+                           "路线": t.decision.route,
+                           "许可": t.decision.permit_id or None}
+        if t.review:
+            out["已复盘"] = True
+        out["提示"] = '索引视图；后果树/证据流水/论证明细用 get_trace(detail="full")'
         return out
 
     def list_traces(self, limit: int = 20) -> list[dict]:

@@ -47,7 +47,7 @@
 4. **记忆桥是进程内直连，不是服务调用。** brain-memory-mcp 目录不在同级路径时
    自动降级：证据只能手动提交、目标对齐取默认值 0.35，框架照常运行但举证
    要靠宿主自己搬。
-5. **18 个工具定义每轮进 prompt（实测约 1930 tok，口径=描述+参数 schema，
+5. **18 个工具定义每轮进 prompt（实测约 1950 tok，口径=描述+参数 schema，
    复测用套件根 `scripts/measure_tool_tokens.py`）。** 会话越长越合算（轨迹落库
    不进上下文），短会话是纯开销。若宿主端在工具定义前插入变动内容，
    前缀缓存命中作废。
@@ -97,7 +97,7 @@ MCP 客户端注册（stdio）：
 | | `prove_route` | 举证论证：图尔敏+Dung+三档标准双闸门 |
 | | `decide` | 决断闸门：三关全过才颁发执行许可 |
 | | `review_outcome` | 复盘：经验回写长期记忆+工具印象更新 |
-| 审计 | `get_trace` / `list_traces` / `attention_status` | 棋盘记录查看 |
+| 审计 | `get_trace` / `list_traces` / `attention_status` | 轨迹查看：`get_trace` 默认索引视图（阶段/账本计数/方案排名/决断，实测比全量省 90%），后果树与证据流水用 `detail="full"` 按需展开 |
 | 工具印象 | `register_tool_impression` / `recall_tools` / `update_tool_impression` | 索引式工具缓存 |
 | 规划 | `plan_mea` | 手段-目的分析：差异→算子→子目标递归 |
 

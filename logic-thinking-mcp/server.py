@@ -148,10 +148,10 @@ def review_outcome(trace_id: str, outcome: str, lessons: str = "",
 # ===================== 审计视图 =====================
 
 @mcp.tool()
-def get_trace(trace_id: str) -> dict:
-    """查看一盘棋的完整记录：阶段、注意力、方案与后果树、排序、
-    证据账本、论证、决断与审计快照。"""
-    return engine.get_trace(trace_id)
+def get_trace(trace_id: str, detail: str = "index") -> dict:
+    """查看思考轨迹。默认索引视图（阶段/注意力/证明标准/账本计数/方案排名/
+    决断结论）；需要后果树全量、证据流水、论证框架时传 detail="full"。"""
+    return engine.get_trace(trace_id, detail)
 
 
 @mcp.tool()

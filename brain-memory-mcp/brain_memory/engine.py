@@ -622,8 +622,7 @@ class BrainMemory:
                 if r > C.COLD_THRESHOLD_R else 0.0
             rows.append({"id": m.id, "content": m.content[:40] + "…",
                          "提取强度": round(r, 3),
-                         "距冷归档_天": round(max(days_left, 0.0), 1),
-                         "提示": "再次检索(成功回忆)可重置衰减并增大稳定性"})
+                         "距冷归档_天": round(max(days_left, 0.0), 1)})
         rows.sort(key=lambda x: x["距冷归档_天"])
         return rows[:limit]
 
