@@ -1,0 +1,11 @@
+{
+  "name": "ai-mind-suite-dsh",
+  "version": "1.0.0",
+  "private": true,
+  "description": "AI Mind Suite as a DeepSeek Harness (dsh) plugin: brain-memory + logic-thinking + inner-voice, one patch, shared memory bank, zero server",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

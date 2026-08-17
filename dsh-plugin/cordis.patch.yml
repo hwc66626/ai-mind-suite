@@ -1,0 +1,55 @@
+- insert:
+    - id: ai-mind-brain-memory
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        transport: stdio
+        serverName: brain-memory
+        command: "/usr/bin/python3"
+        args:
+          - "/workspace/brain-memory-mcp/server.py"
+        env:
+          BRAIN_MEMORY_DB: "/root/.brain_memory/memory.db"
+        toolCallTimeoutMs: 60000
+        failOnStartupError: false
+        reconnect:
+          enabled: true
+          initialDelayMs: 500
+          maxDelayMs: 30000
+          maxAttempts: 10
+- insert:
+    - id: ai-mind-logic-thinking
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        transport: stdio
+        serverName: logic-thinking
+        command: "/usr/bin/python3"
+        args:
+          - "/workspace/logic-thinking-mcp/server.py"
+        env:
+          BRAIN_MEMORY_DB: "/root/.brain_memory/memory.db"
+          LOGIC_MIND_DB: "/root/.logic_mind/mind.db"
+        toolCallTimeoutMs: 60000
+        failOnStartupError: false
+        reconnect:
+          enabled: true
+          initialDelayMs: 500
+          maxDelayMs: 30000
+          maxAttempts: 10
+- insert:
+    - id: ai-mind-inner-voice
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        transport: stdio
+        serverName: inner-voice
+        command: "/usr/bin/python3"
+        args:
+          - "/workspace/inner-voice-mcp/server.py"
+        env:
+          INNER_MIND_DB: "/root/.inner_mind/voice.db"
+        toolCallTimeoutMs: 60000
+        failOnStartupError: false
+        reconnect:
+          enabled: true
+          initialDelayMs: 500
+          maxDelayMs: 30000
+          maxAttempts: 10

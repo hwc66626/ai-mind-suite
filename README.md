@@ -72,7 +72,7 @@ cd ../inner-voice-mcp  && INNER_MIND_NO_DAEMON=1 python3 tests/test_voice.py
 }
 ```
 
-三个文件夹保持并排放置（后两个按相对路径桥接记忆库）。详细的导入步骤、环境变量、验证清单见 [IMPORT.md](IMPORT.md)。接入 DeepSeek Harness（dsh）见 [inner-voice-mcp/dsh-integration](inner-voice-mcp/dsh-integration/README.md)。
+三个文件夹保持并排放置（后两个按相对路径桥接记忆库）。详细的导入步骤、环境变量、验证清单见 [IMPORT.md](IMPORT.md)。接入 DeepSeek Harness（dsh）：**三合一插件 [`dsh-plugin/`](dsh-plugin/) 一次装全套**（已用真实 dsh 验证：`plugin add` + `--dump-config` 三行 MCP 全进合成树）；只要 inner-voice 单件时见 [inner-voice-mcp/dsh-integration](inner-voice-mcp/dsh-integration/README.md)。
 
 ## 为什么接入了却感觉不到效果
 

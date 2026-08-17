@@ -1,5 +1,9 @@
 # Inner Voice × DeepSeek Harness（dsh）接入
 
+> **要装全套三件套**（brain-memory / logic-thinking / inner-voice）？
+> 用仓库根目录的三合一插件 [`dsh-plugin/`](../../dsh-plugin/)，一次装齐且
+> 自动布线共享记忆库。本目录只用于"只要 inner-voice 单件"的场景。
+
 把本项目作为 dsh 插件接入。**全程本地、零服务器**：
 
 ```
