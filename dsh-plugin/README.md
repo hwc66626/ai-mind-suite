@@ -59,14 +59,32 @@ npx @deepseek-ai/dsh web --patch ./dsh-plugin/cordis.patch.yml
 | Python | 3.10+，且装了官方 MCP SDK（`pip install mcp`） |
 | 令牌 | **本插件不需要任何令牌**；DeepSeek API Key 只用于 dsh 调模型 |
 
-## 让协议真正生效（重要）
+## 系统提示词协议注入（自动，默认开）
 
-三个 server 已通过 MCP 握手的 `instructions` 字段注入强制工作协议；
-dsh 的 mcp-client 若未把它拼进系统提示词，四闸门就只剩"工具在列"。
-双保险做法：把仓库根 [`HOST_RULES.md`](../HOST_RULES.md) 的复制区写进
-dsh 的系统提示词层——最直接的口子是 profile 的 `cordis.patch.yml`
-追加一段系统提示 patch（行 id 以 dsh 官方 bundle 为准，先
-`--dump-default-config` 查现有行的写法再覆盖，别把 `!!js` 表达式写死）。
+三个 server 已通过 MCP 握手的 `instructions` 注入协议，但那条通道是否进
+系统提示词由客户端决定。本插件更进一步：**`install_dsh.py` 默认把六条
+强制工作协议直接写进 dsh 的 `system-prompt` persona**（`- id: system-prompt`
+的 config 替换行）——协议随每轮系统提示词下发，不依赖模型"想起"工具，
+也不依赖 dsh 处理 `instructions` 的方式。已用真实 dsh 验证：`plugin add`
+后 `--dump-config` 的合成树里 persona = 默认身份（`{{model}}`/`{{cwd}}`
+模板保留）+ 完整协议块。
+
+- 不想要：`python install_dsh.py --no-rules` 重新生成 patch
+- 升级注意：该行整体覆盖 system-prompt 的 config；dsh 未来若改默认
+  persona，重跑 `install_dsh.py` 即按最新默认值重生成（协议块与
+  `mind.py rules` 单源同步）
+
+## 驾驶舱：mind.py（你这边的一个命令）
+
+模型那边有三个 MCP；你这边有 `mind.py`——不依赖模型自觉的宿主侧出口：
+
+| 命令 | 作用 | 退出码 |
+|---|---|---|
+| `python3 mind.py status` | 三库聚合仪表盘：记忆/钉扎、运行中目标锁（含卡壳标记）、未兑现承诺/逾期/守护进程 | 0 |
+| `python3 mind.py doctor` | 全栈体检：node/python/MCP SDK/三服务器文件/库可写 | 有问题 1 |
+| `python3 mind.py brief` | 新会话注入内容（钉扎约束 + 近期沉淀），与 MCP 同库 | 0 |
+| `python3 mind.py gate` | 收工闸门：有未完结目标锁 → **退出码 1**（可挂停止钩子） | 拦截 1 |
+| `python3 mind.py rules` | 打印强制工作协议全文（核对注入/贴其他宿主） | 0 |
 
 ## 与单件插件的关系
 
@@ -86,8 +104,13 @@ dsh 的系统提示词层——最直接的口子是 profile 的 `cordis.patch.y
 
 ## 配置格式依据
 
-`cordis.patch.yml` 每行一个 `- insert:`，`name: '@deepseek-ai/dsh-mcp-client'`
-+ stdio + `command/args` 数组直传 + `reconnect`，与官方生态一致；
-`package.json` 的 `dsh.bundle.patch` 字段是 dsh 自动登记 bundle 的依据
-（`plugin add` 后自动进 `dsh.profile.bundles`）。本插件格式已用真实 dsh
-（v24 环境）验证：`plugin add` + `--dump-config` 三行全进合成树。
+`cordis.patch.yml` 含两类行，均与官方 `cordis-plugin-include` 的
+`applyEntryPatches` 语义对齐（源码核对）：MCP 行是 `- insert:` 列表
+（`name: '@deepseek-ai/dsh-mcp-client'` + stdio + `command/args` 数组
+直传 + `reconnect`）；协议行是平铺替换对象 `- id: system-prompt` +
+`name` + `config`（非 insert patch 的 id 在操作层平铺，config 整体
+浅替换——所以 persona 必须自带默认身份文本）。`package.json` 的
+`dsh.bundle.patch` 字段是 dsh 自动登记 bundle 的依据（`plugin add`
+后自动进 `dsh.profile.bundles`）。本插件全部格式已用真实 dsh
+（Node 24 环境）验证：`plugin add` + `--dump-config` 三行 MCP 与
+协议注入的 persona 同时出现在合成树。

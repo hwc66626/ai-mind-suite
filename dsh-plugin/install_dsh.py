@@ -51,6 +51,14 @@ RECONNECT = [
     "          maxAttempts: 10",
 ]
 
+# dsh 默认 persona（@deepseek-ai/dsh-system-prompt 的 config.persona 原文，
+# --dump-default-config 提取）。协议块必须接在它后面：{{model}}/{{cwd}}
+# 是运行时模板占位，丢了模型就不知道自己在哪个目录干活
+DEFAULT_PERSONA = (
+    "You are a coding agent powered by the {{model}} model. "
+    "Your working directory is {{cwd}}."
+)
+
 
 def _row(row_id: str, server_name: str, server_py: Path,
          env_lines: list[str]) -> list[str]:
@@ -73,7 +81,29 @@ def _row(row_id: str, server_name: str, server_py: Path,
     ]
 
 
-def build_patch() -> str:
+def _rules_row() -> list[str]:
+    """系统提示词注入行：替换 system-prompt 的 persona。
+
+    patch 语义（cordis-plugin-include 源码 applyEntryPatches）：非 insert
+    的 patch 是平铺对象 {id, name?, config?}，config 整体浅替换。因此
+    persona 必须以 dsh 默认 persona 开头（含 {{model}}/{{cwd}} 模板占位，
+    缺了模型就丢失工作目录上下文），协议块接在其后。协议文本与
+    mind.py rules 命令单源（RULES_HEAD），改一处两边同步。
+    """
+    from mind import RULES_HEAD
+    persona = (DEFAULT_PERSONA + "\n\n" + RULES_HEAD).rstrip()
+    return [
+        "# 系统提示词注入：把强制工作协议写进 persona（dsh 每轮都带上）。",
+        "# 升级注意：dsh 未来若改默认 persona 或加新字段，这里会整体覆盖，",
+        "# 重新跑 install_dsh.py 即可按最新默认值重生成。",
+        "- id: system-prompt",
+        "  name: '@deepseek-ai/dsh-system-prompt'",
+        "  config:",
+        f"    persona: {json.dumps(persona)}",
+    ]
+
+
+def build_patch(with_rules: bool = True) -> str:
     """手写紧凑 YAML（不为一条 patch 引入 PyYAML 依赖）。"""
     brain_env = [f"          BRAIN_MEMORY_DB: {json.dumps(str(SHARED_BRAIN_DB))}"]
     logic_env = [
@@ -87,6 +117,8 @@ def build_patch() -> str:
         + _row("ai-mind-logic-thinking", "logic-thinking", LOGIC, logic_env)
         + _row("ai-mind-inner-voice", "inner-voice", VOICE, voice_env)
     )
+    if with_rules:
+        rows = rows + _rules_row()
     return "\n".join(rows) + "\n"
 
 
@@ -129,6 +161,9 @@ def _node_version_ok() -> tuple[bool, str]:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--list", action="store_true", help="只打印不写文件")
+    ap.add_argument("--no-rules", action="store_true",
+                    help="不注入系统提示词协议（默认注入：四闸门协议写进 "
+                         "persona，dsh 每轮都带上，不依赖模型想起工具）")
     args = ap.parse_args()
 
     print(f"套件根：{SUITE}")
@@ -136,7 +171,7 @@ def main() -> int:
     print(f"共享记忆库：{SHARED_BRAIN_DB}（brain 与 logic 桥接共用）")
     for p in check_env():
         print(f"⚠ {p}")
-    patch = build_patch()
+    patch = build_patch(with_rules=not args.no_rules)
     out = HERE / "cordis.patch.yml"
     if args.list:
         print("\n----- cordis.patch.yml -----")
@@ -144,11 +179,13 @@ def main() -> int:
         return 0
     out.write_text(patch, encoding="utf-8")
     print(f"\n已生成 {out}")
+    print("（系统提示词协议：" + ("已注入" if not args.no_rules else "未注入（--no-rules）") + "）")
     print("\n接下来两步：")
     print(f"  1) npx @deepseek-ai/dsh plugin --profile web add {HERE}")
     print("  2) npx @deepseek-ai/dsh --profile web")
     print("     工具前缀 mcp__brain-memory__ / mcp__logic-thinking__ / "
           "mcp__inner-voice__")
+    print("     驾驶舱：python3 mind.py status / doctor / brief / gate / rules")
     return 0
 
 
