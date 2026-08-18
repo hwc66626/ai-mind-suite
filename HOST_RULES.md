@@ -66,17 +66,44 @@ MCP 服务器是**被动工具箱**：工具只在模型主动调用时才生效
 - 提出更省力但产物更差的方案让我选 → 违规（会被 propose_deviation 拒）
 ```
 
-## 加固层（可选，硬拦截）
+## 加固层（推荐，硬保证 + 自动注入）
 
 规则文件和 instructions 都是"强约束的软实现"：显著改变模型默认行为，
-但不是物理拦截。要硬 guarantee，用宿主的 hook 机制在客户端层强制：
+但不是物理拦截。宿主钩子（hook）不依赖模型自觉——这是 claude-mem 类
+项目验证过的路线：46k 星的核心竞争力不是记忆算法，是 5 个生命周期
+钩子让一切自动发生。
 
-- **Claude Code**：`Stop` hook 里跑
-  `python3 logic-thinking-mcp/cli.py goal-pending`——存在未 approve 的
-  目标锁时以非零码退出，回合被强制续跑（详见
-  `logic-thinking-mcp/README.md` 的 Watchdog 一节）。
-- **Trae / Cursor 等**：若宿主支持 stop/interruption 钩子或自动化任务，
-  用同一命令做收工检查；不支持时规则文件已是该宿主内的最强手段。
+**Claude Code**（`settings.json`，路径换成你的安装路径）：
+
+```json
+{
+  "hooks": {
+    "SessionStart": [{
+      "hooks": [{
+        "type": "command",
+        "command": "python3 /path/to/ai-mind-suite/brain-memory-mcp/cli.py session-brief"
+      }]
+    }],
+    "Stop": [{
+      "hooks": [{
+        "type": "command",
+        "command": "python3 /path/to/ai-mind-suite/logic-thinking-mcp/cli.py goal-pending"
+      }]
+    }]
+  }
+}
+```
+
+两个钩子各治一个"依赖模型自觉"的死穴：
+
+| 钩子 | 命令 | 作用 |
+|---|---|---|
+| SessionStart | `brain-memory-mcp/cli.py session-brief` | 钩子 stdout 直接进上下文：钉扎硬约束置顶 + 近期会话沉淀自动注入——**模型忘了调 session_start 也不会空窗开局** |
+| Stop | `logic-thinking-mcp/cli.py goal-pending` | 存在未 approve 的目标锁时退出码 1，回合被强制续跑——**"答应即终止"被物理拦截** |
+
+**Trae / Cursor 等**：若宿主支持会话启动注入或停止钩子，用同一对命令；
+不支持时规则文件已是该宿主内的最强手段（四个 CLI 命令随时可手动用：
+`session-brief` / `pins` / `goal-pending` / `goal-stop <id>`）。
 
 ## 效果自检清单
 

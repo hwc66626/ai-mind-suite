@@ -35,7 +35,7 @@
 
 | 闸门 | 服务器 | 机制 | 拦截对象 |
 |---|---|---|---|
-| 目标锁 | logic-thinking | `goal_begin` 登记待办/产物/检查命令三项验收标准；`goal_stop` 是停止闸门：证据不齐返回 `block` 并列出缺口，全部达标才 `approve`；全程留痕可审计 | 答应即终止：想收工先过验收，0/3 完成度别想结束 |
+| 目标锁 | logic-thinking | `goal_begin` 登记待办/产物/检查命令三项验收标准；`goal_stop` 是停止闸门：证据不齐返回 `block` 并列出缺口，全部达标才 `approve`；**同一缺口连续 3 次被拦触发循环干预**（doom loop 检测，借鉴 harness 工程 LoopDetectionMiddleware：零进展的重复申请给出三条出路而不是无限拦截）；全程留痕可审计 | 答应即终止：想收工先过验收，0/3 完成度别想结束；原地打转：卡壳目标在 `goal_board` 显式标出 |
 | 记忆闸门 | brain-memory | `pin_constraint` 钉扎硬约束（置顶注入、永不衰减、90 天后仍在）；`session_start` 开局注入"本该记得的一切"；`session_close` 收尾把事实沉淀落盘 | 转头就忘：跨会话自动召回，不用用户反复提醒 |
 | 承诺看门狗 | inner-voice | `make_promise` 把口头承诺落库成账并设核查时限；`fulfill_promise` 兑现必须附证据（命令输出/产物路径/测试结果），空证据直接拒绝；守护进程到期催办 | 口说无凭："我做完了"没证据不算兑现 |
 | 自主性闸门 | logic-thinking | `goal_begin(autonomy=…)` 登记即预授权，`ask_gate` 把问题抛给用户前必须归类（irreversible/credential/ambiguity/external 四类才许问，其余 self 自答 + 问询预算 3 条）；`propose_deviation` 是换方案唯一通道：省力动机 + 降低验收标准直接 reject，真障碍登记待裁决且**裁决前不许停摆**（`goal_stop` 联动拦截） | 复述确认："是否执行"的答案已在预授权里；偷懒降级：省力+降标不是选项；抛完选择就停摆：降级未裁决不许收工 |
@@ -83,7 +83,7 @@ cd ../inner-voice-mcp  && INNER_MIND_NO_DAEMON=1 python3 tests/test_voice.py
 |---|---|---|---|
 | 1. 没真正接入 | 客户端里没配 `mcpServers`，或路径过期、进程没起来 | 模型世界里根本没有这些工具 | 客户端 MCP 面板确认三个服务器在线；跑 `python3 scripts/verify_client_view.py` 复现模型视角 |
 | 2. 协议没进系统提示词 | MCP 是被动工具箱：工具要模型**主动调用**才生效，而四闸门治理的恰恰是"不调工具就想收工" | 工具在列，模型却从不用 `goal_begin` | 三个 server.py 已通过 initialize 握手的 `instructions` 字段注入强制协议（支持该字段的客户端会拼进系统提示词）；若宿主不支持，把 [`HOST_RULES.md`](HOST_RULES.md) 的复制区贴进规则文件（Trae 规则 / `.cursorrules` / `CLAUDE.md`），协议 100% 生效 |
-| 3. 软约束的本质 | 提示词级协议显著改变默认行为，但不是物理拦截，弱模型仍可能无视 | 多数任务变好，偶尔还是偷懒 | 硬拦截用宿主 hook：Claude Code 的 `Stop` hook 挂 `python3 logic-thinking-mcp/cli.py goal-pending`，存在未完结目标锁时退出码 1，回合被强制续跑——不再依赖模型自觉 |
+| 3. 软约束的本质 | 提示词级协议显著改变默认行为，但不是物理拦截，弱模型仍可能无视 | 多数任务变好，偶尔还是偷懒 | 宿主 hook 双保险（完整配置见 [`HOST_RULES.md`](HOST_RULES.md) 加固层）：Claude Code `SessionStart` 挂 `brain-memory-mcp/cli.py session-brief` 钩子输出直接进上下文（忘了调 session_start 也不空窗开局），`Stop` 挂 `logic-thinking-mcp/cli.py goal-pending` 存在未完结目标锁时退出码 1 强制续跑——不再依赖模型自觉 |
 
 三分钟见效路径：`verify_client_view.py` 确认接入 → 贴 `HOST_RULES.md` 复制区 →
 用其自带的自检清单（五个场景各 1 分钟）验收。诚实边界：第 1、2 层解决后效果立现；

@@ -254,6 +254,9 @@ def goal_progress(goal_id: str, done_todo: str, evidence: str = "") -> dict:
 def goal_stop(goal_id: str, final_message: str = "") -> dict:
     """停止闸门：想结束回合必须先过此闸。decision=block 时禁止结束，
     按原因继续执行后重试；确实无法完成用 goal_abandon 留痕放弃。
+    同一缺口连续 3 次被拦会触发"循环干预"（doom loop 检测）：
+    零进展的重复申请不会改变判定，出路是完成待办/修复检查、
+    propose_deviation 登记真障碍、或 goal_abandon 显式退出。
     宿主协议：见 block 必须回循环，不许当没看见。"""
     from logic_mind.goals import GoalLock
     return GoalLock(engine.store).request_stop(goal_id, final_message)

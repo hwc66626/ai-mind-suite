@@ -30,6 +30,11 @@ CHECK_TIMEOUT_S = 120
 MAX_CHECKS = 12          # 单个目标最多登记多少条检查命令
 MAX_STOP_JOURNAL = 50    # 停止申请日志封顶（防长任务把行撑爆）
 MAX_OPEN_QUESTIONS = 3   # 问询预算：同时挂起的用户问题上限
+# 循环干预阈值：同一"缺口签名"（完成度/缺失产物/未过检查完全相同）连续
+# 被拦到该次数，判定为 doom loop（原地打转）——借鉴 harness 工程的
+# LoopDetectionMiddleware：拦截本身不该被无限重复，零进展的重复申请
+# 是换策略的信号，不是坚持的信号
+LOOP_STREAK_WARN = 3
 # 问询闸门：抛给用户的问题必须属于哪一类"真的不能自答"
 ASK_KINDS = ("irreversible",   # 不可逆/危险操作，超出预授权
              "credential",     # 缺凭证/权限，客观上做不了
@@ -87,6 +92,8 @@ class GoalLock:
             "questions": [],      # 问询闸门的挂起问题
             "deviations": [],     # 偏移闸门的方案变更申请
             "stop_journal": [],
+            "stop_streak": 0,     # 循环干预：同缺口签名连续被拦次数
+            "last_block_signature": [],
             "created_at": _now(),
             "updated_at": _now(),
         }
@@ -186,12 +193,24 @@ class GoalLock:
         entry = {"at": _now(), "decision": "",
                  "final_message": (final_message or "")[:200]}
         if reasons:
+            # 循环干预：缺口签名 = (完成度, 缺失产物, 未过检查) 的快照。
+            # 与上次被拦完全相同 → 连击 +1；任何一项变化（多做了一条待办、
+            # 修好了一条检查、产物落了盘）→ 连击归 1。零外部变化的
+            # 重复申请就是 doom loop 的指纹
+            signature = [len(lock["todos"]) - len(todo_left),
+                         sorted(missing),
+                         sorted(f["命令"] for f in failed_checks)]
+            streak = ((lock.get("stop_streak", 0) + 1)
+                      if signature == list(lock.get("last_block_signature")
+                                           or []) else 1)
+            lock["stop_streak"] = streak
+            lock["last_block_signature"] = signature
             entry["decision"] = "block"
             entry["failed"] = reasons
             lock["stop_journal"] = (lock["stop_journal"] + [entry])[-MAX_STOP_JOURNAL:]
             if not self.store.save_goal_lock(lock, expect_updated_at=expect):
                 return CONFLICT
-            return {
+            out = {
                 "decision": "block",
                 "原因": reasons,
                 "未完成待办": todo_left,
@@ -200,7 +219,24 @@ class GoalLock:
                 "指令": "不许结束回合。逐项完成上述缺口后重新 goal_stop；"
                         "确实无法完成则 goal_abandon 并说明原因（留痕）",
             }
+            if streak >= LOOP_STREAK_WARN:
+                out["循环干预"] = {
+                    "检测": (f"同一缺口（完成度 {signature[0]}/{len(lock['todos'])}、"
+                             f"缺失产物 {len(missing)}、未过检查 "
+                             f"{len(failed_checks)}）连续 {streak} 次申请收工被拦"
+                             "——你在原地打转，重复申请不会改变判定结果"),
+                    "出路": [
+                        "做出可验证进展：完成一条待办（附证据）或修复一条"
+                        "未过的检查命令，签名变化即视为脱困",
+                        "确认是真障碍：propose_deviation(reason_kind="
+                        "impossible/resource，附证据) 登记降级申请待裁决",
+                        "目标本身不该继续：goal_abandon 说明原因，显式留痕退出",
+                    ],
+                }
+            return out
         lock["state"] = "done"
+        lock["stop_streak"] = 0
+        lock["last_block_signature"] = []
         entry["decision"] = "approve"
         lock["stop_journal"] = (lock["stop_journal"] + [entry])[-MAX_STOP_JOURNAL:]
         if not self.store.save_goal_lock(lock, expect_updated_at=expect):
@@ -275,6 +311,9 @@ class GoalLock:
                     row["开放问询"] = len(open_q)
                 if pending_d:
                     row["待裁决降级"] = len(pending_d)
+                streak = lk.get("stop_streak", 0)
+                if streak >= LOOP_STREAK_WARN:
+                    row["卡壳"] = f"同一缺口连续 {streak} 次被拦（doom loop）"
             rows.append((lk.get("updated_at", ""), lk["state"], row))
         running = [r for _, s, r in rows if s == "running"]
         # 按最近更新排序（updated_at 落库时同源写入 payload，时间序可信）；
